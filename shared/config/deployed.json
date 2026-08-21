@@ -1,0 +1,9 @@
+{
+  "aegisVault": "",
+  "attestationVerifier": "",
+  "smartAccount": "",
+  "sessionKey": "",
+  "deployedAt": "",
+  "environment": "simulator",
+  "_comment": "Populated by contracts/script/Deploy.s.sol after deployment to Sepolia"
+}

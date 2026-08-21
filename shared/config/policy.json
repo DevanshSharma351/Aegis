@@ -1,0 +1,9 @@
+{
+  "maxExecutionsPerDay": 1,
+  "valueLimit": "0",
+  "withdrawalPermissions": "NONE",
+  "allowedSelectors": [
+    "0x7f8661a1"
+  ],
+  "description": "Session key policy: rate-limited to 1 tx/day, zero native value transfer, no withdrawal permissions, only AegisVault.rebalance() selector whitelisted"
+}
