@@ -64,7 +64,7 @@ export default function Home() {
         </main>
 
         {/* Stats Footer */}
-        <div className="w-full relative z-10 bg-gradient-to-b from-transparent to-black/80 pt-4 pb-48 flex justify-center">
+        <div className="w-full relative z-10 bg-gradient-to-b from-transparent via-black/50 to-black pt-4 pb-48 flex justify-center">
           <StatsFooter />
         </div>
         
