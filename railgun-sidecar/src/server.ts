@@ -12,7 +12,8 @@
 import express from "express";
 
 import { assets, explorerTxUrl, networkConfig } from "./config";
-import { poiConfigured, startEngine } from "./engine";
+import { poiConfigured, poiNodeUrls, startEngine } from "./engine";
+import { createSubmitter } from "./submission";
 import { shield } from "./shield";
 import { unshieldSwapReshield } from "./swap";
 import {
@@ -46,14 +47,45 @@ function parseAmount(value: unknown, field: string): bigint {
   );
 }
 
+/**
+ * Health, plus the two security-relevant modes stated explicitly.
+ *
+ * `poi` and `submission` are reported as structured values rather than left for
+ * a caller to infer, because both are claims a user interface will repeat. A UI
+ * that has to guess whether POI was real, or whether a transaction was private,
+ * will eventually guess wrong in the flattering direction.
+ */
 app.get("/health", (_req, res) => {
+  let submission: { mode: string; route: string; mempoolExposed: boolean } | null = null;
+  try {
+    const route = createSubmitter(getSubmitter());
+    submission = { mode: route.mode, route: route.route, mempoolExposed: route.mempoolExposed };
+  } catch {
+    submission = null;
+  }
+
+  const urls = poiNodeUrls();
+
   res.status(ready ? 200 : 503).json({
     status: ready ? "ok" : "starting",
     service: "aegis-railgun-sidecar",
     engineReady: ready,
-    poiConfigured: poiConfigured(),
     error: startupError,
-    // Stated explicitly so a caller never has to infer why a swap will fail.
+
+    poi: {
+      // "real" means: a POI aggregator is configured and the engine enforces the
+      // required Chainalysis list. There is no bypass mode in this build.
+      mode: poiConfigured() ? "real" : "unconfigured",
+      configured: poiConfigured(),
+      nodeUrls: urls,
+      requiredList: "efc6ddb59c098a13fb2b618fdae94c1c3a807abc8fb1837c93620c9143ee9e88",
+      note: poiConfigured()
+        ? "Spending enforces the required Chainalysis OFAC list via the configured aggregator."
+        : "No POI aggregator configured; spending shielded funds is disabled.",
+    },
+
+    submission,
+
     capabilities: {
       shield: ready,
       balances: ready,

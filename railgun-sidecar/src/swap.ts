@@ -33,6 +33,7 @@ import {
 
 import { explorerTxUrl, networkConfig, resolveAsset } from "./config";
 import { getUnshieldFeeBasisPoints, poiConfigured } from "./engine";
+import { createSubmitter, submitWithOptionalFallback } from "./submission";
 import { UniswapV3SwapRecipe } from "./recipes";
 import { quoteExactInputSingle } from "./uniswapV3";
 import { get0zkAddress, getEncryptionKey, getShieldedBalance, getSubmitter, getWalletId } from "./wallet";
@@ -65,6 +66,12 @@ export interface SwapResult {
   relayAdaptContract: string;
   explorerUrl: string;
   recipient0zk: string;
+  /** How the transaction reached the chain, and whether it was mempool-exposed. */
+  submission: {
+    mode: "public" | "private";
+    route: string;
+    mempoolExposed: boolean;
+  };
 }
 
 export async function unshieldSwapReshield(params: SwapParams): Promise<SwapResult> {
@@ -243,12 +250,28 @@ export async function unshieldSwapReshield(params: SwapParams): Promise<SwapResu
     { ...originalGasDetails, gasEstimate },
   );
 
-  console.log(`[railgun] broadcasting via ${submitter.address}`);
-  const sent = await submitter.sendTransaction(transaction as TransactionRequest);
-  const receipt = (await sent.wait()) as ContractTransactionReceipt;
+  // Submission is deliberately the last step and the only part that varies by
+  // route: the proof above already commits to the exact unshield amounts, the
+  // cross-contract calls, and the reshield recipients, so no route can alter
+  // what was authorised.
+  const route = createSubmitter(submitter);
+  console.log(
+    `[railgun] broadcasting via ${submitter.address} over ${route.route}` +
+      (route.mempoolExposed ? " (PUBLIC MEMPOOL — sandwichable)" : " (private, no mempool exposure)"),
+  );
 
-  if (receipt.status !== 1) {
-    throw new Error(`Cross-contract transaction ${receipt.hash} reverted`);
+  const submission = await submitWithOptionalFallback(
+    route,
+    submitter,
+    transaction as TransactionRequest,
+  );
+
+  const receipt = (await submitter.provider!.getTransactionReceipt(
+    submission.txHash,
+  )) as ContractTransactionReceipt;
+
+  if (!receipt || receipt.status !== 1) {
+    throw new Error(`Cross-contract transaction ${submission.txHash} reverted`);
   }
 
   // RelayAdapt catches inner failures and still returns success at the EVM
@@ -282,5 +305,10 @@ export async function unshieldSwapReshield(params: SwapParams): Promise<SwapResu
     relayAdaptContract: relayAdapt,
     explorerUrl: explorerTxUrl(receipt.hash),
     recipient0zk: recipient,
+    submission: {
+      mode: submission.mode,
+      route: submission.route,
+      mempoolExposed: submission.mempoolExposed,
+    },
   };
 }

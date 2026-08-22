@@ -94,8 +94,16 @@ Verified live:
   — 0.002 WETH into the shielded pool. The 0zk balance reads
   `1995000000000000`, i.e. the amount less the 25 bps protocol fee.
 
-Not executed: the shielded swap. It needs a POI aggregator (gap 2 below), and
-the sidecar returns HTTP 501 naming that rather than failing obscurely.
+- [Private swap](https://sepolia.etherscan.io/tx/0x67d64afa95fd76e82d7f38d52e8fa234253c73d7c9ec2d78f3a3000e2aab41dd)
+  — one atomic RelayAdapt transaction: unshield 0.0015 WETH, swap on Uniswap V3,
+  reshield 33.66 USDC. Real Groth16 proof, real POI validation against the
+  Chainalysis list, 1.86M gas.
+- [Private swap driven from the UI](https://sepolia.etherscan.io/tx/0xca122606ba)
+  — the same path triggered by the frontend button, block 11545862.
+
+POI is genuinely enforced via `https://ppoi.fdi.network`; there is no simulated
+POI path in this repository. What is *not* yet enabled is private submission —
+see gap 2 below.
 
 ## Getting it running
 
@@ -174,13 +182,13 @@ These are real and deliberately not papered over:
 
 1. **No on-chain DCAP verification.** Relayed verification instead; the trade-off
    is documented above and in `AttestationVerifier.sol`.
-2. **Railgun spending needs a POI aggregator.** Sepolia is POI-required.
-   Shielding and balance scans work without one; unshield/swap/reshield cannot
-   generate a proof. Running our own node was investigated and rejected —
-   `railgun-sidecar/POI.md` has the full analysis, but the short reason is that a
-   POI list is keyed by its provider's public key, so a node we run cannot serve
-   the list the SDK requires, and substituting our own would make the proof
-   attest nothing.
+2. **Public-mempool MEV exposure.** The atomic RelayAdapt transaction is
+   submitted publicly by default, so it can be sandwiched — bounded by the
+   slippage floor, not prevented. Flashbots Protect works on Sepolia and is one
+   env var away (`AEGIS_SUBMISSION_MODE=private`); it is not the default because
+   Sepolia builder coverage is thin and a route that silently fails to land is a
+   worse default than one that is honest about its exposure.
+   See `railgun-sidecar/MEV.md`.
 3. **The session key does not yet authorise Railgun.** `getSubmitter()` is the
    seam; leaving it unswitched is a deliberate scope decision, explained there.
 4. **The session key is a plaintext env var.** It should be TEE-derived via

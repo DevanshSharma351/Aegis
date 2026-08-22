@@ -25,37 +25,28 @@ signing a transaction. Derived from `RAILGUN_WALLET_MNEMONIC`.
 It learns nothing about the balances it is broadcasting for — it holds the
 proof, not the secrets behind it. Set by `RAILGUN_TEST_SIGNER_KEY`.
 
-## Proof of Innocence — read this before expecting a swap to work
+## Proof of Innocence — working
 
-Sepolia is configured as a POI-required network in `@railgun-community/wallet`.
-That produces a sharp split in what works without a POI aggregator node:
+Sepolia is a POI-required network, and a real aggregator is configured:
 
-| Operation | Without `RAILGUN_POI_NODE_URL` |
-|---|---|
-| Start the engine, load the provider | works |
-| Scan the merkletree, read balances | works |
-| Shield | works |
-| Unshield / swap / reshield | **fails** |
+```bash
+RAILGUN_POI_NODE_URL=https://ppoi.fdi.network
+```
 
-The reason is that `WalletPOI.init` performs no network I/O — it registers the
-node interface and returns — so `loadProvider` is satisfied by any URL. Actual
-POI requests happen only when *spending*, where generating a transact proof
-requires POI merkle proofs from a live aggregator.
+It serves `Ethereum_Sepolia` and the required Chainalysis OFAC list
+(`efc6ddb5…`). Spending is fully gated by it — there is **no bypass or simulated
+POI path anywhere in this build**. `/health` reports `poi.mode` as `real` or
+`unconfigured`; there is no third value.
 
-The sidecar checks this up front and returns HTTP 501 with an explanation,
-rather than letting you wait several minutes for proof generation to die on an
-opaque request error.
+Evidence it is enforcing: our shielded WETH read `spendable: 0` before the
+aggregator was configured and `spendable: 1995000000000000` after. The balance
+was unchanged; only spendability moved.
 
-To enable spending, set `RAILGUN_POI_NODE_URL` to a reachable POI aggregator.
-At the time of writing, no public Sepolia aggregator was reachable from this
-environment.
+A freshly created note shows `spendable: 0` until the aggregator validates it.
+That is the gate working, not a bug — `/balances` reports total and spendable
+separately so the distinction is visible.
 
-Running our own node was investigated in depth — see [POI.md](POI.md). Short
-version: the node supports Sepolia and is not hard to stand up, but a list's key
-*is* its provider's public key, so a node we run cannot serve the Chainalysis
-OFAC list the SDK requires. The only way through is to substitute our own
-allow-everything list, which keeps the ZK proof real but makes what it attests
-vacuous. Not taken.
+Full detail, including why we did not self-host: [POI.md](POI.md).
 
 ## Why the swap is hand-built
 

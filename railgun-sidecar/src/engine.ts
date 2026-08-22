@@ -231,7 +231,15 @@ export function isEngineStarted(): boolean {
 }
 
 export function poiConfigured(): boolean {
-  return Boolean((process.env.RAILGUN_POI_NODE_URL ?? "").trim());
+  return poiNodeUrls().length > 0;
+}
+
+/** Configured POI aggregator URLs, in priority order. */
+export function poiNodeUrls(): string[] {
+  return (process.env.RAILGUN_POI_NODE_URL ?? "")
+    .split(",")
+    .map((url) => url.trim())
+    .filter(Boolean);
 }
 
 export async function stopEngine(): Promise<void> {

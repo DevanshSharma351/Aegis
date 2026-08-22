@@ -76,6 +76,11 @@ services:
       AEGIS_ATTESTATION_SOURCE: ${AEGIS_ATTESTATION_SOURCE:-simulator}
       COINGECKO_API_KEY: ${COINGECKO_API_KEY:-}
       OLLAMA_HOST: http://127.0.0.1:11434
+      # Reached over the internal network only; the sidecar publishes no port.
+      RAILGUN_SIDECAR_URL: http://railgun-sidecar:8080
+      # Browser origins permitted to call the Railgun endpoints. Allow-listed
+      # rather than "*" because those endpoints move funds.
+      AEGIS_CORS_ORIGINS: ${AEGIS_CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
     volumes:
       # Read-only: the enclave must not be able to rewrite its own config, and
       # the asset whitelist is baked into the image regardless.
@@ -161,6 +166,13 @@ services:
       RAILGUN_POI_NODE_URL: ${RAILGUN_POI_NODE_URL:-}
       RAILGUN_ENGINE_DB_PATH: /data/railgun
       RAILGUN_VERBOSE: ${RAILGUN_VERBOSE:-false}
+      # Submission routing. Defaults to public: private submission on Sepolia is
+      # best-effort, and a default that can silently fail to land is worse than
+      # one that is honest about its mempool exposure.
+      AEGIS_SUBMISSION_MODE: ${AEGIS_SUBMISSION_MODE:-public}
+      AEGIS_FLASHBOTS_RELAY_URL: ${AEGIS_FLASHBOTS_RELAY_URL:-}
+      AEGIS_FLASHBOTS_IDENTITY_KEY: ${AEGIS_FLASHBOTS_IDENTITY_KEY:-}
+      AEGIS_SUBMISSION_FALLBACK: ${AEGIS_SUBMISSION_FALLBACK:-false}
     volumes:
       - ./shared:/app/shared:ro
       - railgun-data:/data/railgun

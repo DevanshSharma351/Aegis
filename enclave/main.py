@@ -20,7 +20,11 @@ from __future__ import annotations
 import traceback
 from typing import Any
 
+import os
+
+import httpx
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from attestation import attestation_source, attest_decision, get_enclave_identity
@@ -33,6 +37,32 @@ app = FastAPI(
     description="Autonomous rebalancing engine running inside a Trusted Execution Environment.",
     version="1.0.0",
 )
+
+# The enclave is the only service on both the internal and egress networks, so
+# it is the single controlled entry point a browser can use to reach the
+# Railgun sidecar. The sidecar itself stays unreachable from the host: it holds
+# the wallet mnemonic, and exposing it directly to a browser would undo the
+# isolation the whole topology is built around.
+#
+# Origins are allow-listed rather than "*" because these endpoints move funds.
+_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get(
+        "AEGIS_CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
+    ).split(",")
+    if origin.strip()
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_ALLOWED_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
+)
+
+# Reachable only across the internal Docker network.
+RAILGUN_SIDECAR_URL = os.environ.get("RAILGUN_SIDECAR_URL", "http://railgun-sidecar:8080")
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +200,83 @@ def rebalance() -> RebalanceResponse:
         signals=signals,
         attestation=AttestationResult(**attestation),
     )
+
+
+# ---------------------------------------------------------------------------
+# Railgun private execution
+# ---------------------------------------------------------------------------
+# These proxy to the sidecar rather than reimplementing anything. The enclave
+# adds the network boundary and nothing else: it does not hold the mnemonic, it
+# does not build the recipe, and it does not decide whether POI was satisfied.
+# It forwards the sidecar's own answer verbatim so a browser cannot be shown a
+# status the sidecar did not actually report.
+
+
+class PrivateSwapRequest(BaseModel):
+    sellToken: str = Field(default="WETH", description="Whitelisted symbol or address")
+    buyToken: str = Field(default="USDC", description="Whitelisted symbol or address")
+    sellAmount: str = Field(description="Base-unit integer, as a string")
+    slippageBps: int = Field(default=150, ge=1, le=1000)
+
+
+@app.get("/railgun/status")
+async def railgun_status() -> dict[str, Any]:
+    """
+    Report the sidecar's real status, including POI mode and submission route.
+
+    Passed through unmodified. The UI needs to distinguish a genuine POI path
+    from an unconfigured one, and a private submission from a public one; the
+    only trustworthy source for that is the component that performed the work.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.get(RAILGUN_SIDECAR_URL + "/health")
+        return response.json()
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="Railgun sidecar unreachable: " + str(exc))
+
+
+@app.get("/railgun/balances")
+async def railgun_balances() -> dict[str, Any]:
+    """Shielded balances, split into total and POI-spendable."""
+    try:
+        async with httpx.AsyncClient(timeout=300) as client:
+            response = await client.get(RAILGUN_SIDECAR_URL + "/balances")
+        if response.status_code != 200:
+            raise HTTPException(status_code=response.status_code, detail=response.text[:400])
+        return response.json()
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="Railgun sidecar unreachable: " + str(exc))
+
+
+@app.post("/railgun/private-swap")
+async def private_swap(request: PrivateSwapRequest) -> dict[str, Any]:
+    """
+    Execute one atomic unshield -> Uniswap V3 swap -> reshield.
+
+    Long timeout by design: the sidecar generates a real Groth16 proof, which
+    dominates the request. Nothing is returned until the transaction is mined,
+    so a caller never sees a pending state presented as a completed one.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=900) as client:
+            response = await client.post(
+                RAILGUN_SIDECAR_URL + "/unshield-swap-reshield",
+                json=request.model_dump(),
+            )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="Railgun sidecar unreachable: " + str(exc))
+
+    body = response.json()
+    if response.status_code != 200 or not body.get("success"):
+        # Forward the sidecar's status so the caller can distinguish a missing
+        # capability (501) from a genuine execution failure (500).
+        raise HTTPException(
+            status_code=response.status_code if response.status_code != 200 else 500,
+            detail=body.get("error", "private swap failed"),
+        )
+
+    return body
 
 
 if __name__ == "__main__":
