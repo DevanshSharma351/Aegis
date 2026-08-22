@@ -53,13 +53,17 @@ import { ConnectButton, useConnectModal } from '@rainbow-me/rainbowkit';
 import { useAccount } from 'wagmi';
 import { Wallet } from 'lucide-react';
 
-export function DockNav() {
+export function DockNav({ onHoverChange }: { onHoverChange?: (hovered: boolean) => void }) {
   const { isConnected } = useAccount();
   const { openConnectModal } = useConnectModal();
 
   return (
-    <div className='fixed bottom-6 left-1/2 z-50 -translate-x-1/2'>
-      <Dock className='items-end pb-3 glass-light rounded-2xl px-2 py-1 shadow-2xl'>
+    <div 
+      className='fixed bottom-6 left-1/2 z-50 -translate-x-1/2'
+      onMouseEnter={() => onHoverChange?.(true)}
+      onMouseLeave={() => onHoverChange?.(false)}
+    >
+      <Dock className='items-end pb-3 bg-white/[0.02] backdrop-blur-xl border border-white/[0.05] hover:bg-white/[0.1] hover:border-white/[0.12] hover:shadow-[0_0_20px_rgba(255,255,255,0.08)] transition-all duration-500 rounded-2xl px-2 py-1 shadow-2xl'>
         {data.map((item, idx) => (
           <DockItem
             key={idx}

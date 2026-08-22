@@ -11,6 +11,8 @@ import {
   X,
 } from 'lucide-react';
 import { Dock, DockIcon, DockItem, DockLabel } from '@/components/core/dock';
+import { TextMorph } from '@/components/core/text-morph';
+import { cn } from '@/lib/utils';
 
 const navItems = [
   { title: 'Home', icon: Home, href: '#home' },
@@ -56,7 +58,10 @@ export function Header() {
   return (
     <>
       <header
-        className="anim fixed top-0 left-0 right-0 z-50 flex items-center justify-between px-5 py-4"
+        className={cn(
+          "anim fixed top-0 left-0 right-0 z-50 flex items-center justify-between px-5 py-4 transition-all duration-300",
+          scrolled ? "bg-black/60 backdrop-blur-xl border-b border-white/5" : "bg-transparent"
+        )}
         style={{ '--d': '0ms' } as React.CSSProperties}
       >
         {/* Logo */}
@@ -99,7 +104,7 @@ export function Header() {
             className="glass rounded-full px-4 py-2 text-xs font-medium text-sign-in-text transition-all hover:bg-white/[0.08] hover:text-white"
             aria-label="Sign in"
           >
-            Sign In
+            <TextMorph>Sign In</TextMorph>
           </button>
           <button
             className="flex h-9 w-9 items-center justify-center rounded-full bg-white/[0.04] md:hidden"

@@ -3,6 +3,8 @@
 import React, { useState } from 'react';
 import { useAccount } from 'wagmi';
 import { Settings, PauseCircle, KeyRound, Cpu, AlertTriangle, ShieldAlert } from 'lucide-react';
+import { TextMorph } from '@/components/core/text-morph';
+import { BorderTrail } from '@/components/core/border-trail';
 
 // Mock owner address for demo
 const VAULT_OWNER = '0x1234567890123456789012345678901234567890';
@@ -31,6 +33,7 @@ export function AdminConsole() {
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         {/* Emergency Pause */}
         <div className="glass-light p-8 rounded-3xl anim flex flex-col border border-red-500/20 bg-red-500/5 relative overflow-hidden group hover:border-red-500/40 transition-all duration-500 hover:shadow-[0_0_40px_rgba(239,68,68,0.1)]" style={{ '--d': '0.2s' } as React.CSSProperties}>
+          <BorderTrail size={180} className="bg-red-500/50" style={{ boxShadow: '0 0 40px 10px rgba(239,68,68,0.3)' }} />
           <div className="absolute top-0 right-0 w-64 h-64 bg-red-500/10 rounded-full blur-3xl -mr-20 -mt-20 pointer-events-none transition-opacity opacity-50 group-hover:opacity-100"></div>
           
           <div className="flex items-center gap-4 mb-6 relative z-10">
@@ -50,12 +53,13 @@ export function AdminConsole() {
                 : 'bg-red-500/20 text-red-400 hover:bg-red-500/30 border border-red-500/20'
             }`}
           >
-            {isPaused ? 'Agent Paused (Resume)' : 'Halt Agent'}
+            <TextMorph>{isPaused ? 'Agent Paused (Resume)' : 'Halt Agent'}</TextMorph>
           </button>
         </div>
 
         {/* Rotate Session Key */}
         <div className="glass-light p-8 rounded-3xl anim flex flex-col relative overflow-hidden group hover:border-white/20 transition-all duration-500 hover:shadow-[0_0_40px_rgba(99,102,241,0.05)]" style={{ '--d': '0.3s' } as React.CSSProperties}>
+          <BorderTrail size={180} className="bg-white/20" style={{ boxShadow: '0 0 40px 10px rgba(255,255,255,0.1)' }} />
           <div className="absolute top-0 right-0 w-64 h-64 bg-accent/5 rounded-full blur-3xl -mr-20 -mt-20 pointer-events-none transition-opacity opacity-50 group-hover:opacity-100"></div>
 
           <div className="flex items-center gap-4 mb-6 relative z-10">
@@ -68,12 +72,13 @@ export function AdminConsole() {
             Re-bind the ZeroDev session key to a new ephemeral wallet. Requires a new hardware quote.
           </p>
           <button className="w-full bg-white/5 hover:bg-white/10 border border-white/10 text-white/90 transition-all hover:shadow-[0_0_20px_rgba(255,255,255,0.1)] rounded-2xl py-4 text-sm font-medium relative z-10 font-mono uppercase tracking-wider">
-            Initiate Rotation
+            <TextMorph>Initiate Rotation</TextMorph>
           </button>
         </div>
 
         {/* Update Measurement */}
         <div className="glass-light p-8 rounded-3xl anim flex flex-col relative overflow-hidden group hover:border-white/20 transition-all duration-500 hover:shadow-[0_0_40px_rgba(255,255,255,0.05)]" style={{ '--d': '0.4s' } as React.CSSProperties}>
+          <BorderTrail size={180} className="bg-white/20" style={{ boxShadow: '0 0 40px 10px rgba(255,255,255,0.1)' }} />
           <div className="absolute top-0 right-0 w-64 h-64 bg-white/5 rounded-full blur-3xl -mr-20 -mt-20 pointer-events-none transition-opacity opacity-50 group-hover:opacity-100"></div>
 
           <div className="flex items-center gap-4 mb-6 relative z-10">
@@ -92,7 +97,7 @@ export function AdminConsole() {
             </p>
           </div>
           <button className="w-full bg-white/5 hover:bg-white/10 border border-white/10 text-white/90 transition-all hover:shadow-[0_0_20px_rgba(255,255,255,0.1)] rounded-2xl py-4 text-sm font-medium relative z-10 font-mono uppercase tracking-wider">
-            Propose New Hash
+            <TextMorph>Propose New Hash</TextMorph>
           </button>
         </div>
       </div>

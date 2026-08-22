@@ -2,6 +2,8 @@
 
 import React from 'react';
 import { ShieldCheck, Cpu, Download, ExternalLink, Lock } from 'lucide-react';
+import { TextMorph } from '@/components/core/text-morph';
+import { BorderTrail } from '@/components/core/border-trail';
 
 export function TrustCenter() {
   const handleDownload = () => {
@@ -37,6 +39,7 @@ export function TrustCenter() {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* Attestation Badge Card */}
         <div className="glass-light p-8 rounded-3xl anim flex flex-col gap-6 relative overflow-hidden group hover:border-white/20 transition-all duration-500 hover:shadow-[0_0_40px_rgba(74,222,128,0.05)]" style={{ '--d': '0.2s' } as React.CSSProperties}>
+          <BorderTrail size={180} className="bg-shield-green/50" style={{ boxShadow: '0 0 40px 10px rgba(74,222,128,0.3)' }} />
           <div className="absolute top-0 right-0 w-64 h-64 bg-shield-green/5 rounded-full blur-3xl -mr-20 -mt-20 pointer-events-none transition-opacity opacity-50 group-hover:opacity-100"></div>
           
           <div className="flex items-start justify-between relative z-10">
@@ -83,7 +86,7 @@ export function TrustCenter() {
                 className="flex-1 flex items-center justify-center gap-2 bg-white text-black hover:bg-white/90 transition-all hover:shadow-[0_0_20px_rgba(255,255,255,0.2)] rounded-xl py-3 text-sm font-medium font-mono uppercase tracking-wider"
               >
                 <Download className="w-4 h-4" />
-                Download Quote
+                <TextMorph>Download Quote</TextMorph>
               </button>
             </div>
           </div>
@@ -91,6 +94,7 @@ export function TrustCenter() {
 
         {/* Policy Configuration Card */}
         <div className="glass-light p-8 rounded-3xl anim flex flex-col gap-6 relative overflow-hidden group hover:border-white/20 transition-all duration-500 hover:shadow-[0_0_40px_rgba(99,102,241,0.05)]" style={{ '--d': '0.3s' } as React.CSSProperties}>
+          <BorderTrail size={180} className="bg-accent/50" style={{ boxShadow: '0 0 40px 10px rgba(99,102,241,0.3)' }} />
           <div className="absolute top-0 right-0 w-64 h-64 bg-accent/5 rounded-full blur-3xl -mr-20 -mt-20 pointer-events-none transition-opacity opacity-50 group-hover:opacity-100"></div>
 
           <div className="flex items-center gap-4 relative z-10">

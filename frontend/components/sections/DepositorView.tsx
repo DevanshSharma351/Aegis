@@ -3,6 +3,8 @@
 import React, { useState } from 'react';
 import { useAccount } from 'wagmi';
 import { Shield, EyeOff, Coins, ArrowRightLeft, Lock } from 'lucide-react';
+import { BorderTrail } from '@/components/core/border-trail';
+import { TextMorph } from '@/components/core/text-morph';
 
 // Mock owner address for demo
 const VAULT_OWNER = '0x1234567890123456789012345678901234567890';
@@ -41,6 +43,7 @@ export function DepositorView() {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* Shield Deposit Card */}
         <div className="glass-light p-8 rounded-3xl anim flex flex-col gap-6 relative overflow-hidden group hover:border-white/20 transition-all duration-500 hover:shadow-[0_0_40px_rgba(99,102,241,0.05)]" style={{ '--d': '0.2s' } as React.CSSProperties}>
+          <BorderTrail size={180} className="bg-accent/50" style={{ boxShadow: '0 0 40px 10px rgba(99,102,241,0.3)' }} />
           <div className="absolute top-0 right-0 w-64 h-64 bg-accent/5 rounded-full blur-3xl -mr-20 -mt-20 pointer-events-none transition-opacity opacity-50 group-hover:opacity-100"></div>
 
           <div className="flex items-center gap-4 relative z-10">
@@ -80,7 +83,7 @@ export function DepositorView() {
               disabled={isShielding || !!txHash}
               className="w-full bg-white text-black hover:bg-white/90 disabled:opacity-50 disabled:cursor-not-allowed transition-all hover:shadow-[0_0_20px_rgba(255,255,255,0.2)] rounded-2xl py-4 text-sm font-medium flex items-center justify-center gap-2 mt-2 font-mono uppercase tracking-wider"
             >
-              {isShielding ? 'Shielding Transaction...' : txHash ? 'Funds Shielded' : 'Generate Key & Shield'}
+              <TextMorph>{isShielding ? 'Shielding Transaction...' : txHash ? 'Funds Shielded' : 'Generate Key & Shield'}</TextMorph>
             </button>
 
             {txHash && (
@@ -94,6 +97,7 @@ export function DepositorView() {
 
         {/* My Position Card (Gated) */}
         <div className="glass-light p-8 rounded-3xl anim flex flex-col gap-6 relative overflow-hidden group hover:border-white/20 transition-all duration-500 hover:shadow-[0_0_40px_rgba(255,255,255,0.05)]" style={{ '--d': '0.3s' } as React.CSSProperties}>
+          <BorderTrail size={180} className="bg-white/20" style={{ boxShadow: '0 0 40px 10px rgba(255,255,255,0.1)' }} />
           <div className="absolute top-0 right-0 w-64 h-64 bg-white/5 rounded-full blur-3xl -mr-20 -mt-20 pointer-events-none transition-opacity opacity-50 group-hover:opacity-100"></div>
 
           <div className="flex items-center gap-4 relative z-10">
@@ -139,7 +143,7 @@ export function DepositorView() {
               className="w-full flex items-center justify-center gap-2 bg-red-500/5 hover:bg-red-500/10 text-red-400 disabled:opacity-50 transition-colors border border-red-500/10 rounded-2xl py-4 text-sm font-medium font-mono uppercase tracking-wider"
             >
               <ArrowRightLeft className="w-4 h-4" />
-              Request Exit (Redeem)
+              <TextMorph>Request Exit (Redeem)</TextMorph>
             </button>
             <p className="text-[10px] text-center text-muted mt-3 font-mono uppercase tracking-wider opacity-60">
               Withdrawals require agent un-shielding phase to complete.

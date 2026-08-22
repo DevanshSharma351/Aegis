@@ -11,6 +11,7 @@ import {
   Variant,
 } from 'motion/react';
 import { cn } from '@/lib/utils';
+import { createPortal } from 'react-dom';
 
 export type CursorProps = {
   children: React.ReactNode;
@@ -40,7 +41,10 @@ export function Cursor({
   const cursorRef = useRef<HTMLDivElement>(null);
   const [isVisible, setIsVisible] = useState(!attachToParent);
 
+  const [mounted, setMounted] = useState(false);
+
   useEffect(() => {
+    setMounted(true);
     if (typeof window !== 'undefined') {
       cursorX.set(window.innerWidth / 2);
       cursorY.set(window.innerHeight / 2);
@@ -49,7 +53,10 @@ export function Cursor({
 
   useEffect(() => {
     if (!attachToParent) {
-      document.body.style.cursor = 'none';
+      const style = document.createElement('style');
+      style.id = 'global-cursor-none';
+      style.innerHTML = '* { cursor: none !important; }';
+      document.head.appendChild(style);
     } else {
       document.body.style.cursor = 'auto';
     }
@@ -60,12 +67,21 @@ export function Cursor({
       onPositionChange?.(e.clientX, e.clientY);
     };
 
+    const handleScroll = () => {
+      onPositionChange?.(cursorX.get(), cursorY.get());
+    };
+
     document.addEventListener('mousemove', updatePosition);
+    window.addEventListener('scroll', handleScroll, { passive: true });
 
     return () => {
       document.removeEventListener('mousemove', updatePosition);
+      window.removeEventListener('scroll', handleScroll);
+      if (!attachToParent) {
+        document.getElementById('global-cursor-none')?.remove();
+      }
     };
-  }, [cursorX, cursorY, onPositionChange]);
+  }, [cursorX, cursorY, onPositionChange, attachToParent]);
 
   const cursorXSpring = useSpring(cursorX, springConfig || { duration: 0 });
   const cursorYSpring = useSpring(cursorY, springConfig || { duration: 0 });
@@ -75,17 +91,25 @@ export function Cursor({
       setIsVisible(visible);
     };
 
+    const handleMouseEnter = () => {
+      if (cursorRef.current?.parentElement) {
+        cursorRef.current.parentElement.style.cursor = 'none';
+      }
+      handleVisibilityChange(true);
+    };
+
+    const handleMouseLeave = () => {
+      if (cursorRef.current?.parentElement) {
+        cursorRef.current.parentElement.style.cursor = 'auto';
+      }
+      handleVisibilityChange(false);
+    };
+
     if (attachToParent && cursorRef.current) {
       const parent = cursorRef.current.parentElement;
       if (parent) {
-        parent.addEventListener('mouseenter', () => {
-          parent.style.cursor = 'none';
-          handleVisibilityChange(true);
-        });
-        parent.addEventListener('mouseleave', () => {
-          parent.style.cursor = 'auto';
-          handleVisibilityChange(false);
-        });
+        parent.addEventListener('mouseenter', handleMouseEnter);
+        parent.addEventListener('mouseleave', handleMouseLeave);
       }
     }
 
@@ -93,23 +117,19 @@ export function Cursor({
       if (attachToParent && cursorRef.current) {
         const parent = cursorRef.current.parentElement;
         if (parent) {
-          parent.removeEventListener('mouseenter', () => {
-            parent.style.cursor = 'none';
-            handleVisibilityChange(true);
-          });
-          parent.removeEventListener('mouseleave', () => {
-            parent.style.cursor = 'auto';
-            handleVisibilityChange(false);
-          });
+          parent.removeEventListener('mouseenter', handleMouseEnter);
+          parent.removeEventListener('mouseleave', handleMouseLeave);
         }
       }
     };
   }, [attachToParent]);
 
-  return (
+  if (!mounted) return null;
+
+  return createPortal(
     <motion.div
       ref={cursorRef}
-      className={cn('pointer-events-none fixed left-0 top-0 z-50', className)}
+      className={cn('pointer-events-none fixed left-0 top-0 z-[9999]', className)}
       style={{
         x: cursorXSpring,
         y: cursorYSpring,
@@ -130,6 +150,7 @@ export function Cursor({
           </motion.div>
         )}
       </AnimatePresence>
-    </motion.div>
+    </motion.div>,
+    document.body
   );
 }

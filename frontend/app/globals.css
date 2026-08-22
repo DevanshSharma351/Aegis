@@ -192,7 +192,7 @@ body {
 .headline {
   font-family: var(--font-display);
   color: #222;
-  font-size: clamp(28px, 6.2vw, 80px);
+  font-size: clamp(40px, 8vw, 110px);
   letter-spacing: -0.04em;
   line-height: 1.12;
   white-space: nowrap;

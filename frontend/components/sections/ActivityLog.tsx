@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { Activity, Clock, CheckCircle2, ArrowRight } from 'lucide-react';
+import { BorderTrail } from '@/components/core/border-trail';
 
 const mockLogs = [
   {
@@ -57,6 +58,7 @@ export function ActivityLog() {
           </div>
           
           <div className="glass-light p-8 rounded-3xl flex flex-col gap-5 border-l-4 border-l-accent relative overflow-hidden group hover:shadow-[0_0_40px_rgba(99,102,241,0.05)] transition-shadow duration-500">
+            <BorderTrail size={180} className="bg-accent/50" style={{ boxShadow: '0 0 40px 10px rgba(99,102,241,0.3)' }} />
             <div className="absolute top-0 right-0 w-32 h-32 bg-accent/5 rounded-full blur-2xl -mr-10 -mt-10 pointer-events-none transition-opacity opacity-50 group-hover:opacity-100"></div>
             <div className="flex items-center gap-4 relative z-10">
               <div className="relative">
@@ -75,6 +77,7 @@ export function ActivityLog() {
 
         {/* Timeline Log */}
         <div className="md:w-2/3 glass-light rounded-3xl p-6 md:p-10 anim relative overflow-hidden group hover:border-white/20 transition-all duration-500 hover:shadow-[0_0_40px_rgba(255,255,255,0.03)]" style={{ '--d': '0.2s' } as React.CSSProperties}>
+          <BorderTrail size={300} className="bg-white/20" style={{ boxShadow: '0 0 40px 10px rgba(255,255,255,0.1)' }} />
           <div className="absolute top-0 right-0 w-full h-full bg-gradient-to-b from-white/5 to-transparent pointer-events-none opacity-50"></div>
           
           <div className="space-y-8 relative before:absolute before:inset-0 before:ml-5 before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-px before:bg-gradient-to-b before:from-transparent before:via-white/15 before:to-transparent z-10">

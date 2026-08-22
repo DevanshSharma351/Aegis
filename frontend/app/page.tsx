@@ -7,13 +7,17 @@ import { StatsFooter } from '@/components/stats/StatsFooter';
 import { DockNav } from '@/components/hero/DockNav';
 import { TrustCenter } from '@/components/sections/TrustCenter';
 import { ActivityLog } from '@/components/sections/ActivityLog';
+import { HeroCTA } from '@/components/hero/HeroCTA';
 import { DepositorView } from '@/components/sections/DepositorView';
 import { AdminConsole } from '@/components/sections/AdminConsole';
 import { DocsSection } from '@/components/sections/DocsSection';
+import { Spotlight } from '@/components/core/spotlight';
+import { useState } from 'react';
 
 export default function Home() {
   const { isConnected } = useAccount();
   const { openConnectModal } = useConnectModal();
+  const [isNavHovered, setIsNavHovered] = useState(false);
 
   const handleGetStarted = () => {
     if (isConnected) {
@@ -34,10 +38,10 @@ export default function Home() {
 
       <div className="page-container">
         {/* Dock Navigation (Fixed Bottom) */}
-        <DockNav />
+        <DockNav onHoverChange={setIsNavHovered} />
 
         {/* Hero Section */}
-        <main className="hero">
+        <main className="hero relative z-20">
           <div className="trust-row anim" style={{ '--d': '0.05s' } as React.CSSProperties}>
             <div className="avatars">
               <div className="avatar a1"><i className="fa-brands fa-ethereum"></i></div>
@@ -56,34 +60,67 @@ export default function Home() {
             An autonomous trading agent that reasons inside hardware-isolated compute and executes through shielded, MEV-proof rails.
           </p>
 
-          <div className="cta-wrapper anim" style={{ '--d': '0.4s' } as React.CSSProperties}>
-            <button className="cta" onClick={handleGetStarted}>
-              {isConnected ? 'View Dashboard' : 'Connect Wallet to Start'}
-            </button>
-          </div>
+          <HeroCTA isConnected={isConnected} onClick={handleGetStarted} />
         </main>
 
         {/* Stats Footer */}
-        <div className="w-full relative z-10 bg-gradient-to-b from-transparent to-black/80 pt-12 pb-24 flex justify-center">
+        <div className="w-full relative z-10 bg-gradient-to-b from-transparent to-black/80 pt-4 pb-48 flex justify-center">
           <StatsFooter />
         </div>
         
         {/* Scrollable Sections - Only show when authenticated */}
-        <div className="w-full bg-black relative z-10 flex flex-col">
-          {isConnected ? (
-            <>
-              <DepositorView />
-              <AdminConsole />
-              <TrustCenter />
-              <ActivityLog />
-              <DocsSection />
-            </>
-          ) : (
-            <div className="py-24 text-center">
-              <p className="text-muted mb-4">Authentication required to view dashboard features.</p>
-              <p className="text-sm text-white/40">Please connect your wallet using the navbar below.</p>
-            </div>
-          )}
+        <div className="w-full bg-black relative z-10 flex flex-col group min-h-screen">
+          {/* Global Background Spotlight + Grid */}
+          <Spotlight
+            className={`transition-opacity duration-500 from-white/[0.15] via-white/[0.07] to-transparent blur-3xl ${isNavHovered ? 'opacity-0' : 'opacity-100'}`}
+            size={250}
+          />
+          <div className="absolute inset-0 pointer-events-none z-0 opacity-40 mix-blend-screen">
+            <svg className="h-full w-full">
+              <defs>
+                <pattern
+                  id="dashboard-grid-pattern"
+                  width="32"
+                  height="32"
+                  patternUnits="userSpaceOnUse"
+                >
+                  <path
+                    d="M0 32H32M32 32V0M32 32H64M32 32V64"
+                    stroke="currentColor"
+                    strokeOpacity="0.1"
+                    className="stroke-white"
+                  />
+                  <rect
+                    x="15"
+                    y="15"
+                    width="2"
+                    height="2"
+                    fill="currentColor"
+                    fillOpacity="0.2"
+                    className="fill-white"
+                  />
+                </pattern>
+              </defs>
+              <rect width="100%" height="100%" fill="url(#dashboard-grid-pattern)" />
+            </svg>
+          </div>
+
+          <div className="relative z-10">
+            {isConnected ? (
+              <>
+                <DepositorView />
+                <AdminConsole />
+                <TrustCenter />
+                <ActivityLog />
+                <DocsSection />
+              </>
+            ) : (
+              <div className="py-24 text-center">
+                <p className="text-muted mb-4">Authentication required to view dashboard features.</p>
+                <p className="text-sm text-white/40">Please connect your wallet using the navbar below.</p>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Spacer for Dock Nav on smaller screens so content isn't hidden behind it */}
