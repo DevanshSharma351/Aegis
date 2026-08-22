@@ -1,52 +1,75 @@
 """
-Aegis Enclave — FastAPI Application
+Aegis Enclave — FastAPI application.
 
-The enclave service exposes two endpoints:
-  GET  /health     — liveness check
-  POST /rebalance  — runs the full pipeline: data_feed → signal → model → attestation
+Endpoints:
+  GET  /health       liveness plus attestation-source disclosure
+  GET  /measurement  this enclave's code measurement and TCB registers
+  POST /rebalance    data → signals → SLM → TDX-attested decision
 
-This service is designed to run inside a TEE (dstack/TDX). The Docker image
-bakes in the Ollama model weights at build time so they are covered by the
-TEE code measurement — see the Dockerfile for details.
+Runs inside a dstack CVM (Intel TDX). The image bakes the Ollama model weights
+in at build time so they fall under the TEE measurement — see the Dockerfile.
+
+This service does NOT submit transactions. It produces an attested decision and
+stops. Signing and submission belong to the identity service, which holds the
+session key; keeping them apart means a compromised enclave still cannot move
+anything on-chain without also defeating the session-key policy.
 """
 
-import os
+from __future__ import annotations
+
 import traceback
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from quant.data_feed import fetch_all_assets
+from attestation import attestation_source, attest_decision, get_enclave_identity
+from quant.data_feed import DataFeedError, fetch_all_assets
+from quant.model import SLMError, query_slm
 from quant.signal import compute_all_signals
-from quant.model import query_slm
-from attestation import attest_decision
-
-# ---------------------------------------------------------------------------
-# App
-# ---------------------------------------------------------------------------
 
 app = FastAPI(
     title="Aegis Enclave",
     description="Autonomous rebalancing engine running inside a Trusted Execution Environment.",
-    version="0.1.0",
+    version="1.0.0",
 )
 
 
 # ---------------------------------------------------------------------------
-# Response schemas
+# Schemas
 # ---------------------------------------------------------------------------
 
 class HealthResponse(BaseModel):
     status: str
     service: str
-    tee_simulator: bool
+    attestation_source: str = Field(
+        description="'simulator' or 'hardware-tdx'. Never inferred by the caller."
+    )
+    guest_agent_reachable: bool
+
+
+class MeasurementResponse(BaseModel):
+    measurement: str = Field(description="bytes32 for AttestationVerifier.expectedMeasurement")
+    mrtd: str
+    rtmr0: str
+    rtmr1: str
+    rtmr2: str
+    rtmr3: str
+    compose_hash: str
+    app_id: str
+    instance_id: str
+    os_image_hash: str
+    source: str
 
 
 class AttestationResult(BaseModel):
     quote: str
-    report_data_hash: str
+    decision_hash: str
+    measurement: str
+    compose_hash: str
     event_log: str
+    source: str
+    generated_at: int
 
 
 class RebalanceResponse(BaseModel):
@@ -62,73 +85,97 @@ class RebalanceResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 @app.get("/health", response_model=HealthResponse)
-async def health() -> HealthResponse:
-    """Liveness check — confirms the enclave service is running."""
-    is_simulator = bool(os.environ.get("DSTACK_SIMULATOR_ENDPOINT"))
+def health() -> HealthResponse:
+    """
+    Liveness check.
+
+    Probes the dstack guest agent rather than only reporting that the process is
+    up: an enclave that cannot reach its guest agent can serve /health all day
+    while being unable to attest anything, which is precisely the failure this
+    endpoint exists to catch.
+    """
+    reachable = True
+    try:
+        get_enclave_identity()
+    except Exception:
+        reachable = False
+
     return HealthResponse(
-        status="ok",
+        status="ok" if reachable else "degraded",
         service="aegis-enclave",
-        tee_simulator=is_simulator,
+        attestation_source=attestation_source(),
+        guest_agent_reachable=reachable,
     )
 
 
-@app.post("/rebalance", response_model=RebalanceResponse)
-async def rebalance() -> RebalanceResponse:
+@app.get("/measurement", response_model=MeasurementResponse)
+def measurement() -> MeasurementResponse:
     """
-    Full rebalance pipeline:
+    Report this enclave's code identity.
 
-    1. Fetch OHLC data from CoinGecko for whitelisted assets.
-    2. Compute deterministic signals (MA crossover, z-score).
-    3. Query the local SLM (Ollama llama3.2:1b) for allocation + rationale.
-    4. Generate a TEE attestation quote binding the decision.
-    5. Return the allocation, rationale, confidence, and attestation proof.
+    Consumed by scripts/deploy_sepolia.sh (to set the on-chain constant) and by
+    scripts/verify_deployment.sh (to detect drift after a rebuild).
     """
     try:
-        # Step 1: Fetch market data
-        ohlc_data = fetch_all_assets(days=7)
-
-        # Step 2: Compute deterministic signals
-        signals = compute_all_signals(ohlc_data)
-
-        # Step 3: Query SLM for allocation decision
-        decision = query_slm(signals)
-
-        # Step 4: Attest the decision via the TEE
-        attestation_result = attest_decision(decision)
-
-        return RebalanceResponse(
-            allocation=decision["allocations"],
-            rationale=decision["rationale"],
-            confidence=decision["confidence"],
-            signals=signals,
-            attestation=AttestationResult(**attestation_result),
-        )
-
-    except ValueError as exc:
-        # SLM retry exhaustion or validation errors
-        raise HTTPException(
-            status_code=422,
-            detail=f"Rebalance failed — SLM or validation error: {exc}",
-        )
+        return MeasurementResponse(**get_enclave_identity().as_dict())
     except Exception as exc:
-        # Unexpected errors — log the traceback for debugging
         traceback.print_exc()
         raise HTTPException(
-            status_code=500,
-            detail=f"Rebalance failed — internal error: {exc}",
+            status_code=503,
+            detail="Cannot read enclave measurement from the dstack guest agent: " + str(exc),
         )
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
+@app.post("/rebalance", response_model=RebalanceResponse)
+def rebalance() -> RebalanceResponse:
+    """
+    Produce one attested rebalance decision.
+
+    1. Fetch OHLC data for the whitelisted assets.
+    2. Compute deterministic signals (SMA crossover, rolling z-score).
+    3. Ask the local SLM for an allocation over those signals.
+    4. Bind the decision hash into a TDX quote.
+
+    Every failure mode returns a distinct status code, because the orchestrator
+    needs to tell "market data unavailable" (retry later) apart from "the guest
+    agent is broken" (the enclave is misconfigured) apart from "the model will
+    not produce valid output" (a model or prompt problem).
+    """
+    try:
+        ohlc = fetch_all_assets(days=7)
+    except DataFeedError as exc:
+        raise HTTPException(status_code=503, detail="Market data unavailable: " + str(exc))
+
+    try:
+        signals = compute_all_signals(ohlc)
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Signal computation failed: " + str(exc))
+
+    try:
+        decision = query_slm(signals)
+    except SLMError as exc:
+        raise HTTPException(status_code=422, detail="SLM produced no valid allocation: " + str(exc))
+
+    try:
+        attestation = attest_decision(decision)
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(status_code=503, detail="Attestation failed: " + str(exc))
+
+    return RebalanceResponse(
+        allocation=decision["allocations"],
+        rationale=decision["rationale"],
+        confidence=decision["confidence"],
+        signals=signals,
+        attestation=AttestationResult(**attestation),
+    )
+
 
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=False,  # No reload in production/TEE — image is frozen
-    )
+    # No reload: the image is frozen and its contents are part of the TEE
+    # measurement. A hot-reloading enclave would attest code it is no longer
+    # running.
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)

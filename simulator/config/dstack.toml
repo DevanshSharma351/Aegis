@@ -1,0 +1,45 @@
+# dstack guest-agent simulator configuration for Aegis.
+#
+# Sockets live in /var/run/dstack, which docker-compose shares with the enclave
+# container as a named volume. This mirrors the layout of a real dstack CVM,
+# where the host's guest agent exposes the same sockets to the workload — so the
+# enclave code path is identical in simulation and on hardware, and nothing in
+# the application has to know which one it is talking to.
+
+[default]
+workers = 8
+max_blocking = 64
+ident = "Aegis dstack Simulator"
+temp_dir = "/tmp"
+keep_alive = 10
+log_level = "info"
+
+[default.core]
+keys_file = "/etc/dstack-sim/appkeys.json"
+compose_file = "/etc/dstack-sim/app-compose.json"
+sys_config_file = "/etc/dstack-sim/sys-config.json"
+data_disks = ["/"]
+
+[default.core.simulator]
+attestation_file = "/etc/dstack-sim/attestation.bin"
+# Rewrites the quote's report_data field with whatever the caller passes to
+# get_quote(). Without this the canned attestation.bin blob would always carry
+# its recorded report_data, and the decision hash would never make it into the
+# quote — which is the one property the whole attestation chain depends on.
+patch_report_data = true
+
+[internal-v0]
+address = "unix:/var/run/dstack/tappd.sock"
+reuse = true
+
+[internal]
+address = "unix:/var/run/dstack/dstack.sock"
+reuse = true
+
+[external]
+address = "unix:/var/run/dstack/external.sock"
+reuse = true
+
+[guest-api]
+address = "unix:/var/run/dstack/guest.sock"
+reuse = true

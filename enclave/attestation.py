@@ -1,104 +1,207 @@
 """
-Aegis Enclave — dstack TEE Attestation Wrapper
+Aegis Enclave -- dstack TEE attestation.
 
-Wraps dstack_sdk.DstackClient().get_quote() to produce hardware-backed
-attestation quotes for rebalance decisions.
+Produces the evidence the rest of the protocol depends on:
 
-The attestation binds the decision hash to the enclave's code measurement,
-providing cryptographic proof that the decision was computed inside a
-genuine TEE with known, unmodified code.
+  1. A deterministic hash of the rebalance decision.
+  2. A TDX quote with that hash bound into its report_data field.
+  3. The enclave code measurement, derived from the TD report registers.
+
+Nothing here decides whether the attestation is *trustworthy* -- that judgement
+belongs to the oracle, which re-derives everything from the quote bytes rather
+than believing what this module reports alongside them. The split is
+deliberate: an enclave asserting its own integrity is not evidence.
 """
 
-import hashlib
-import json
+from __future__ import annotations
+
 import os
-from typing import Any
+import time
+from dataclasses import dataclass
+from typing import Any, Mapping
 
-from dstack_sdk import TappdClient
+from dstack_sdk import DstackClient
+
+from aegis_tdx import (
+    compute_decision_hash,
+    measurement_from_quote,
+    measurement_from_tcb_info,
+    parse_quote,
+)
+
+SOURCE_SIMULATOR = "simulator"
+SOURCE_HARDWARE = "hardware-tdx"
 
 
-# ---------------------------------------------------------------------------
-# Attestation
-# ---------------------------------------------------------------------------
-
-def compute_decision_hash(decision: dict[str, Any]) -> bytes:
+def attestation_source() -> str:
     """
-    Compute a deterministic SHA-256 hash of a rebalance decision.
+    Report whether quotes come from the dstack simulator or real TDX hardware.
 
-    The hash covers the full allocation + rationale + confidence, serialized
-    as sorted-key JSON. This is the value bound into the TEE attestation
-    quote's report_data field.
+    This value is threaded all the way to the frontend badge and into
+    deployed.json. A simulator quote carries a canned attestation blob with
+    report_data patched in: it exercises every code path but proves nothing
+    about hardware, so the distinction must never be left to inference. It is
+    stated explicitly at every layer.
 
-    Returns:
-        32-byte SHA-256 digest.
+    Resolution order:
+      AEGIS_ATTESTATION_SOURCE   explicit override, wins if set
+      DSTACK_SIMULATOR_ENDPOINT  present implies the simulator
+      otherwise                  assume real hardware
     """
-    # Canonical serialization: sorted keys, no whitespace, no trailing newline.
-    canonical = json.dumps(decision, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode("utf-8")).digest()
+    override = os.environ.get("AEGIS_ATTESTATION_SOURCE", "").strip()
+    if override:
+        return override
+    if os.environ.get("DSTACK_SIMULATOR_ENDPOINT", "").strip():
+        return SOURCE_SIMULATOR
+    return SOURCE_HARDWARE
 
 
-def attest_decision(decision: dict[str, Any]) -> dict[str, Any]:
+def _client() -> DstackClient:
     """
-    Generate a TEE attestation quote for a rebalance decision.
+    Build a dstack client.
 
-    1. Computes a deterministic hash of the decision.
-    2. Passes the hash as report_data to the dstack TEE quote API.
-    3. Returns the quote bytes + metadata for on-chain verification.
+    DstackClient resolves its endpoint from DSTACK_SIMULATOR_ENDPOINT when set,
+    and otherwise probes the well-known guest agent socket paths. The enclave
+    therefore needs no branch of its own: the identical code path runs against
+    the simulator container and against a real dstack CVM.
+    """
+    return DstackClient()
 
-    The `quote` field is ABI-encoded as (bytes32 decisionHash, bytes32 measurementHash)
-    so the on-chain AttestationVerifier.verify() can abi.decode it directly.
 
-    The mock measurement hash matches the value set in Deploy.s.sol:
-        keccak256("MOCK_ENCLAVE_MEASUREMENT")
+@dataclass(frozen=True)
+class EnclaveIdentity:
+    """The enclave code identity, as reported by the guest agent."""
 
-    In production this would be replaced with the real MRTD/RTMR from the
-    TDX quote, verified on-chain via a full DCAP verifier library.
+    measurement: bytes
+    mrtd: str
+    rtmr0: str
+    rtmr1: str
+    rtmr2: str
+    rtmr3: str
+    compose_hash: str
+    app_id: str
+    instance_id: str
+    os_image_hash: str
+    source: str
 
-    Args:
-        decision: The allocation dict from the SLM (allocations, rationale, confidence).
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "measurement": "0x" + self.measurement.hex(),
+            "mrtd": self.mrtd,
+            "rtmr0": self.rtmr0,
+            "rtmr1": self.rtmr1,
+            "rtmr2": self.rtmr2,
+            "rtmr3": self.rtmr3,
+            "compose_hash": self.compose_hash,
+            "app_id": self.app_id,
+            "instance_id": self.instance_id,
+            "os_image_hash": self.os_image_hash,
+            "source": self.source,
+        }
 
-    Returns:
-        Dict with keys:
-        - quote: hex-encoded ABI-encoded proof bytes (bytes32 ++ bytes32)
-        - report_data_hash: hex-encoded SHA-256 of the decision
-        - event_log: summary string for the on-chain event
-        - raw_tdx_quote: hex-encoded raw TDX quote (for off-chain audit)
+
+def get_enclave_identity() -> EnclaveIdentity:
+    """
+    Read this enclave measurement registers from the guest agent.
+
+    Used by GET /measurement, which is how the deploy script learns the value to
+    burn into AttestationVerifier.expectedMeasurement, and how
+    verify_deployment.sh detects that a rebuild has drifted from the deployed
+    constant.
+    """
+    info = _client().info()
+    tcb = info.tcb_info
+
+    # compose_hash is on the top-level response for every dstack version; 0.5.x
+    # mirrors it into tcb_info as well. Prefer top-level, fall back, so the
+    # enclave works across both.
+    compose_hash = info.compose_hash or getattr(tcb, "compose_hash", "")
+    if not compose_hash:
+        raise RuntimeError(
+            "dstack guest agent returned no compose_hash. The measurement cannot "
+            "be derived without it; refusing to report a partial identity."
+        )
+
+    measurement = measurement_from_tcb_info(
+        {"mrtd": tcb.mrtd, "rtmr0": tcb.rtmr0, "rtmr1": tcb.rtmr1, "rtmr2": tcb.rtmr2},
+        compose_hash,
+    )
+
+    return EnclaveIdentity(
+        measurement=measurement,
+        mrtd=tcb.mrtd,
+        rtmr0=tcb.rtmr0,
+        rtmr1=tcb.rtmr1,
+        rtmr2=tcb.rtmr2,
+        rtmr3=tcb.rtmr3,
+        compose_hash=compose_hash,
+        app_id=info.app_id,
+        instance_id=info.instance_id,
+        os_image_hash=info.os_image_hash or getattr(tcb, "os_image_hash", ""),
+        source=attestation_source(),
+    )
+
+
+def attest_decision(decision: Mapping[str, Any]) -> dict[str, Any]:
+    """
+    Bind a rebalance decision to a TDX quote.
+
+    Steps:
+      1. Hash the decision (keccak256 over canonical JSON).
+      2. Ask the guest agent for a quote with that hash as report_data.
+      3. Re-parse the returned quote and assert report_data actually came back
+         bound. A guest agent that ignored the request would otherwise produce a
+         quote attesting nothing about this decision, and the failure would
+         surface only downstream as an opaque oracle rejection.
+      4. Derive the measurement from the quote bytes and cross-check it against
+         the guest agent Info response.
+
+    Returns a dict carrying the quote, decision hash, measurement, event log,
+    and attestation source.
     """
     decision_hash = compute_decision_hash(decision)
 
-    # dstack_sdk.DstackClient auto-detects the endpoint:
-    # - If DSTACK_SIMULATOR_ENDPOINT is set, connects to the simulator.
-    # - Otherwise, connects to /var/run/tappd.sock (real TDX hardware).
-    client = TappdClient()
+    client = _client()
+    quote_response = client.get_quote(decision_hash)
 
-    # tdx_quote expects report_data as bytes or str, max 64 bytes for raw or hashes.
-    # SHA-256 produces exactly 32 bytes — well within the limit.
-    quote_response = client.tdx_quote(decision_hash)
+    raw_quote = quote_response.quote
+    quote_hex = raw_quote if isinstance(raw_quote, str) else bytes(raw_quote).hex()
+    if quote_hex.startswith("0x"):
+        quote_hex = quote_hex[2:]
 
-    # The quote_response contains the raw TDX quote bytes (for audit/off-chain use).
-    raw_quote_bytes = quote_response.quote
+    parsed = parse_quote(quote_hex)
 
-    # ---------------------------------------------------------------------------
-    # Build ABI-encoded proof for the on-chain AttestationVerifier.
-    #
-    # The verifier does:
-    #   (bytes32 reportDataHash, bytes32 measurementHash) = abi.decode(proof, (bytes32, bytes32))
-    #
-    # ABI encoding of two static bytes32 values is simply their concatenation.
-    # Mock measurement = keccak256("MOCK_ENCLAVE_MEASUREMENT") from Deploy.s.sol
-    # ---------------------------------------------------------------------------
-    MOCK_MEASUREMENT_HEX = "a1bb2773ecc99e5ac83b377edfb45efc514c4ceac893c8db62ed88cec4f4f7c3"
-    mock_measurement_bytes = bytes.fromhex(MOCK_MEASUREMENT_HEX)
+    # Step 3. This single assertion is what makes the quote evidence about THIS
+    # decision rather than evidence in general.
+    if parsed.report_data_32 != decision_hash:
+        raise RuntimeError(
+            "TDX quote report_data does not match the decision hash: expected "
+            + decision_hash.hex()
+            + ", quote carries "
+            + parsed.report_data_32.hex()
+            + ". The guest agent did not bind the requested report_data, so the "
+            "quote proves nothing about this decision."
+        )
 
-    # ABI encode: both are already 32 bytes, concatenate directly
-    report_data_hash_b32 = decision_hash[:32].ljust(32, b'\x00')  # sha256 is already 32 bytes
-    measurement_hash_b32 = mock_measurement_bytes[:32].ljust(32, b'\x00')
+    identity = get_enclave_identity()
 
-    abi_encoded_proof = report_data_hash_b32 + measurement_hash_b32
+    # Step 4. Quote-derived and agent-reported measurements come from two
+    # different code paths on the agent side. Disagreement means the agent is
+    # internally inconsistent and its measurement cannot be trusted.
+    measurement = measurement_from_quote(parsed, identity.compose_hash)
+    if measurement != identity.measurement:
+        raise RuntimeError(
+            "Measurement derived from the quote does not match the guest agent "
+            "Info response: " + measurement.hex() + " vs " + identity.measurement.hex()
+            + ". Refusing to emit an attestation."
+        )
 
     return {
-        "quote": abi_encoded_proof.hex(),
-        "report_data_hash": decision_hash.hex(),
-        "event_log": f"attested decision {decision_hash.hex()[:16]}... at TEE",
-        "raw_tdx_quote": raw_quote_bytes.hex() if isinstance(raw_quote_bytes, bytes) else str(raw_quote_bytes),
+        "quote": "0x" + quote_hex,
+        "decision_hash": "0x" + decision_hash.hex(),
+        "measurement": "0x" + measurement.hex(),
+        "compose_hash": identity.compose_hash,
+        "event_log": quote_response.event_log or "",
+        "source": identity.source,
+        "generated_at": int(time.time()),
     }

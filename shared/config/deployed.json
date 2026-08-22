@@ -1,4 +1,12 @@
 {
-  "AegisVault": "0x74386Acb93D382c940c015F1ad9329E13b7D5cA4",
-  "AttestationVerifier": "0xcDb2a6d5b6725C5505f51cCEBEBCD90Ac9106ba9"
+  "AegisVault": "0xB7B42f53f69D6a973a34c77EB690a828eb91bCD0",
+  "AttestationVerifier": "0x17227Df878fDB2D1AdC67891c339E741218161b7",
+  "attestationSource": "simulator",
+  "chainId": 11155111,
+  "deployedAtBlock": 11544948,
+  "deployer": "0x975a2D11E8d1c147D79548d9F7a510D2dA1eDc40",
+  "expectedMeasurement": "0x94261f530c8d08cdda5620deecce45120d745a871c9ed96f08ab428de17a1af4",
+  "oracleSigner": "0x0212AdAc560383416B4973Ded96c35Dcb912531A",
+  "sessionKey": "0x61e7eDBD1C14C7F0B14513958e94d9f58770E662",
+  "smartAccount": "0x61e7eDBD1C14C7F0B14513958e94d9f58770E662"
 }

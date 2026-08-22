@@ -1,112 +1,66 @@
-import { signerToEcdsaValidator } from "@zerodev/ecdsa-validator";
-import { createKernelAccount, createKernelAccountClient } from "@zerodev/sdk";
-import { Hex, createPublicClient, http } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
-import { sepolia } from "viem/chains";
-import * as dotenv from "dotenv";
-import * as path from "path";
+/**
+ * Step 1 of the bootstrap: derive the ERC-4337 smart account address.
+ *
+ * The address is counterfactual — deterministic in (owner, entryPoint,
+ * kernelVersion, index) and known before any transaction. That is what lets the
+ * vault be deployed, then the account bound, without a chicken-and-egg problem:
+ * the account need not exist on-chain to be authorised.
+ *
+ *   npm run account
+ */
 
-// Load .env for local development — inside Docker, env vars are injected by compose
-dotenv.config({ path: path.resolve(process.cwd(), ".env") });
+import { getOwnerKernelAccount, ownerAccount } from "./clients";
+import { ENTRY_POINT, KERNEL_VERSION } from "./clients";
+import { networkConfig, updateDeployedConfig } from "./config";
 
-export async function getAccount() {
-  const ALCHEMY_API_KEY = process.env.ALCHEMY_API_KEY;
-  const PIMLICO_API_KEY = process.env.PIMLICO_API_KEY;
-  const AEGIS_OWNER_PRIVATE_KEY = process.env.AEGIS_OWNER_PRIVATE_KEY as Hex;
+export async function describeAccount() {
+  const { account, publicClient } = await getOwnerKernelAccount();
+  const owner = ownerAccount();
 
-  if (!PIMLICO_API_KEY || !AEGIS_OWNER_PRIVATE_KEY) {
-    throw new Error(
-      "Missing required environment variables: PIMLICO_API_KEY, AEGIS_OWNER_PRIVATE_KEY"
-    );
-  }
+  const [code, ownerBalance] = await Promise.all([
+    publicClient.getCode({ address: account.address }),
+    publicClient.getBalance({ address: owner.address }),
+  ]);
 
-  const BUNDLER_URL = `https://api.pimlico.io/v2/sepolia/rpc?apikey=${PIMLICO_API_KEY}`;
-  const PAYMASTER_URL = BUNDLER_URL; // Pimlico serves both on the same endpoint
+  const deployed = Boolean(code && code !== "0x");
 
-  const rpcUrl = ALCHEMY_API_KEY
-    ? `https://eth-sepolia.g.alchemy.com/v2/${ALCHEMY_API_KEY}`
-    : "https://ethereum-sepolia-rpc.publicnode.com";
-
-  // Fallback RPC list — tried in order if the primary fails DNS resolution (common in WSL2 Docker)
-  const fallbackRpcUrl = "https://ethereum-sepolia-rpc.publicnode.com";
-
-  console.log(`[identity-debug] rpcUrl: "${rpcUrl}"`);
-  console.log(`[identity-debug] BUNDLER_URL: "${BUNDLER_URL}"`);
-
-  // Try primary RPC, fall back to public node on connection error
-  async function createPublicClientWithFallback() {
-    try {
-      const client = createPublicClient({ transport: http(rpcUrl), chain: sepolia });
-      await client.getChainId(); // probe
-      console.log(`[identity-debug] Connected to primary RPC: ${rpcUrl}`);
-      return client;
-    } catch (e: any) {
-      if (rpcUrl === fallbackRpcUrl) throw e;
-      console.warn(`[identity-debug] Primary RPC failed (${e?.cause?.code ?? e?.message}), falling back to public node...`);
-      const client = createPublicClient({ transport: http(fallbackRpcUrl), chain: sepolia });
-      console.log(`[identity-debug] Connected to fallback RPC: ${fallbackRpcUrl}`);
-      return client;
-    }
-  }
-
-  const publicClient = await createPublicClientWithFallback();
-
-  const signer = privateKeyToAccount(AEGIS_OWNER_PRIVATE_KEY);
-
-  // ZeroDev SDK v5 requires explicit entryPoint + kernelVersion
-  const { constants } = await import("@zerodev/sdk");
-  const entryPoint = constants.getEntryPoint("0.7");
-  const kernelVersion = constants.KERNEL_V3_1;
-
-  const ecdsaValidator = await signerToEcdsaValidator(publicClient, {
-    signer,
-    entryPoint,
-    kernelVersion,
-  });
-
-  const account = await createKernelAccount(publicClient, {
-    plugins: { sudo: ecdsaValidator },
-    entryPoint,
-    kernelVersion,
-  });
-
-  const { createZeroDevPaymasterClient } = await import("@zerodev/sdk");
-  const { createPimlicoBundlerClient } = await import("permissionless/clients/pimlico");
-  
-  const pimlicoBundlerClient = createPimlicoBundlerClient({
-    transport: http(BUNDLER_URL),
-    chain: sepolia,
-  });
-  
-  const paymasterClient = createZeroDevPaymasterClient({
-    chain: sepolia,
-    transport: http(PAYMASTER_URL),
-  });
-
-  const kernelClient = createKernelAccountClient({
-    account,
-    chain: sepolia,
-    bundlerTransport: http(BUNDLER_URL),
-    paymaster: paymasterClient,
-    userOperation: {
-      estimateFeesPerGas: async () => {
-        const gasPrice = await pimlicoBundlerClient.getUserOperationGasPrice();
-        return {
-          maxFeePerGas: gasPrice.fast.maxFeePerGas,
-          maxPriorityFeePerGas: gasPrice.fast.maxPriorityFeePerGas,
-        };
-      },
-    },
-  });
-
-  return { account, kernelClient, publicClient, signer, PAYMASTER_URL, BUNDLER_URL };
+  return {
+    network: networkConfig().network,
+    chainId: networkConfig().chainId,
+    owner: owner.address,
+    ownerBalanceWei: ownerBalance.toString(),
+    smartAccount: account.address,
+    deployed,
+    entryPoint: ENTRY_POINT.address,
+    entryPointVersion: ENTRY_POINT.version,
+    kernelVersion: KERNEL_VERSION,
+  };
 }
 
-// If run directly — print the smart account address
 if (require.main === module) {
-  getAccount()
-    .then(({ account }) => {
-      console.log("Kernel Smart Account Address:", account.address);
+  describeAccount()
+    .then((info) => {
+      console.log("Owner EOA            :", info.owner);
+      console.log("Owner balance (wei)  :", info.ownerBalanceWei);
+      console.log("Kernel smart account :", info.smartAccount);
+      console.log("Deployed on-chain    :", info.deployed);
+      console.log("EntryPoint           :", info.entryPoint, `(v${info.entryPointVersion})`);
+      console.log("Kernel version       :", info.kernelVersion);
+
+      if (!info.deployed) {
+        console.log(
+          "\nThe account is counterfactual until its first UserOperation. The address\n" +
+            "above is final regardless, so it is safe to bind to the vault now.",
+        );
+      }
+
+      // Recorded so the deploy script and the pipeline read one value rather
+      // than each re-deriving it.
+      updateDeployedConfig({ smartAccount: info.smartAccount as `0x${string}` });
+      process.exit(0);
     })
-    .catch(console.error);
+    .catch((error) => {
+      console.error("[identity] createAccount failed:", error.message);
+      process.exit(1);
+    });
 }

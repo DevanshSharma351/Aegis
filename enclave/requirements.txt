@@ -1,23 +1,31 @@
-# Enclave — Python dependencies
-# FastAPI + ASGI server
+# Aegis Enclave — Python dependencies
+#
+# Pinned exactly. The installed package set is part of the container image, and
+# the container image is part of the TEE measurement, so an unpinned dependency
+# would change the enclave identity on an unrelated upstream release and break
+# on-chain verification with no local change to explain it.
+
+# --- API layer ---
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
+pydantic==2.10.4
 
-# Data / Quant
+# --- Quant layer ---
 pandas==2.2.3
 numpy==2.2.1
 requests==2.32.3
 
-# Ollama client (local SLM inference)
+# --- Local SLM inference ---
 ollama==0.4.7
 
-# dstack TEE attestation SDK
-dstack-sdk==0.1.6
+# --- TEE attestation ---
+dstack-sdk==0.5.4
 
-# Testing
+# --- keccak256 for decision hashes and measurements ---
+# Must match the hash Solidity computes; see shared/pylib/aegis_tdx/keccak.py
+# for why hashlib.sha3_256 is not a substitute.
+eth-hash[pycryptodome]==0.7.1
+
+# --- Testing (installed in the image so the frozen build is self-testing) ---
 pytest==8.3.4
-pytest-asyncio==0.25.0
 httpx==0.28.1
-
-# Schema validation
-pydantic==2.10.4

@@ -1,60 +1,183 @@
-version: '3.8'
+# =============================================================================
+# Aegis — full stack
+# =============================================================================
+#   docker compose up -d --build
+#   ./scripts/run_full_pipeline.sh
+#
+# NETWORK TOPOLOGY, AND WHY IT IS SHAPED THIS WAY
+#
+#   aegis-internal   internal: true — no route to the host or the internet.
+#                    Carries the two services that hold secrets: the oracle
+#                    (signing key) and the railgun sidecar (wallet mnemonic).
+#                    Neither publishes a port; the only way to reach them is
+#                    from a sibling container on this network.
+#
+#   aegis-egress     ordinary bridge. Services that must reach the outside
+#                    world (CoinGecko, Sepolia RPC, the Pimlico bundler) attach
+#                    to this as well.
+#
+# The enclave sits on both, which makes it the only path from outside to the
+# sidecar — matching the design intent that the sidecar is reachable from the
+# enclave and from nowhere else. scripts/verify_deployment.sh asserts the
+# sidecar is unreachable from the host rather than trusting this comment.
+#
+# Only the enclave publishes a port (8000), because the orchestrator must call
+# /rebalance. Everything else is addressed by service name inside the compose
+# network.
+# =============================================================================
+
+name: aegis
 
 services:
+  # ---------------------------------------------------------------------------
+  # dstack guest-agent simulator
+  # ---------------------------------------------------------------------------
+  # Stands in for the TEE guest agent. Owns the socket directory and shares it
+  # with the enclave through a named volume, exactly as a real dstack CVM
+  # exposes /var/run/dstack.sock to its workload — so the enclave's attestation
+  # code path is identical in both environments.
+  #
+  # On real TDX hardware: drop this service, delete the dstack-sockets volume
+  # from the enclave, bind-mount the host's /var/run/dstack.sock instead, and
+  # set AEGIS_ATTESTATION_SOURCE=hardware-tdx.
+  dstack-simulator:
+    build:
+      context: ./simulator
+    image: aegis-dstack-simulator:latest
+    container_name: aegis-dstack-simulator
+    restart: unless-stopped
+    volumes:
+      - dstack-sockets:/var/run/dstack
+    networks:
+      - aegis-internal
+    healthcheck:
+      test: ["CMD", "test", "-S", "/var/run/dstack/dstack.sock"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 5s
+
+  # ---------------------------------------------------------------------------
+  # Enclave — quant + SLM + attestation
+  # ---------------------------------------------------------------------------
   enclave:
     build:
-      context: ./enclave
+      # Repo root, so the image can copy shared/pylib/aegis_tdx.
+      context: .
+      dockerfile: enclave/Dockerfile
+    image: aegis-enclave:latest
+    container_name: aegis-enclave
+    restart: unless-stopped
+    depends_on:
+      dstack-simulator:
+        condition: service_healthy
+    environment:
+      DSTACK_SIMULATOR_ENDPOINT: /var/run/dstack/dstack.sock
+      AEGIS_ATTESTATION_SOURCE: ${AEGIS_ATTESTATION_SOURCE:-simulator}
+      COINGECKO_API_KEY: ${COINGECKO_API_KEY:-}
+      OLLAMA_HOST: http://127.0.0.1:11434
+    volumes:
+      # Read-only: the enclave must not be able to rewrite its own config, and
+      # the asset whitelist is baked into the image regardless.
+      - dstack-sockets:/var/run/dstack:ro
     ports:
       - "8000:8000"
-    environment:
-      - OLLAMA_HOST=http://localhost:11434
-      - COINGECKO_API_KEY=${COINGECKO_API_KEY}
     networks:
-      - internal_net
-      - default
-    volumes:
-      - ./shared:/app/shared
-      - /tmp/dstack_run2/tappd.sock:/var/run/tappd.sock
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - aegis-internal
+      - aegis-egress
 
-  railgun-sidecar:
+  # ---------------------------------------------------------------------------
+  # Attestation oracle
+  # ---------------------------------------------------------------------------
+  # Verifies TDX quotes and signs the on-chain attestation. Internal only: this
+  # is the key that decides which enclave builds the protocol will accept.
+  oracle:
     build:
-      context: ./railgun-sidecar
-    expose:
-      - "8080"
+      context: .
+      dockerfile: oracle/Dockerfile
+    image: aegis-oracle:latest
+    container_name: aegis-oracle
+    restart: unless-stopped
     environment:
-      - RAILGUN_WALLET_MNEMONIC=${RAILGUN_WALLET_MNEMONIC}
-      - RAILGUN_ENGINE_DB_PATH=/app/railgun-db
+      AEGIS_ORACLE_PRIVATE_KEY: ${AEGIS_ORACLE_PRIVATE_KEY:?set AEGIS_ORACLE_PRIVATE_KEY in .env}
+      AEGIS_REQUIRE_HARDWARE: ${AEGIS_REQUIRE_HARDWARE:-false}
+      AEGIS_MEASUREMENT_ALLOWLIST: ${AEGIS_MEASUREMENT_ALLOWLIST:-}
+      AEGIS_DSTACK_VERIFIER_URL: ${AEGIS_DSTACK_VERIFIER_URL:-}
+      AEGIS_ATTESTATION_TTL_S: ${AEGIS_ATTESTATION_TTL_S:-900}
+      ORACLE_PORT: "8100"
     networks:
-      - internal_net
-    volumes:
-      - ./shared:/app/shared
+      - aegis-internal
+      # Needed only when AEGIS_REQUIRE_HARDWARE is on, to reach the dstack
+      # verifier for Intel collateral. Harmless otherwise — the oracle makes no
+      # outbound calls in simulator mode.
+      - aegis-egress
 
+  # ---------------------------------------------------------------------------
+  # Identity — ERC-4337 smart account + session key
+  # ---------------------------------------------------------------------------
   identity:
     build:
-      context: ./identity
+      context: .
+      dockerfile: identity/Dockerfile
+    image: aegis-identity:latest
+    container_name: aegis-identity
+    restart: unless-stopped
     environment:
-      - PIMLICO_API_KEY=${PIMLICO_API_KEY}
-      - ZERODEV_PROJECT_ID=${ZERODEV_PROJECT_ID}
-      - ALCHEMY_API_KEY=${ALCHEMY_API_KEY}
-      - AEGIS_OWNER_PRIVATE_KEY=${AEGIS_OWNER_PRIVATE_KEY}
-      - SESSION_KEY_PRIVATE_KEY=${SESSION_KEY_PRIVATE_KEY}
-      - AEGIS_VAULT_ADDRESS=${AEGIS_VAULT_ADDRESS}
-      - ATTESTATION_VERIFIER_ADDRESS=${ATTESTATION_VERIFIER_ADDRESS}
-      - NODE_OPTIONS=--dns-result-order=ipv4first
-    dns:
-      - 8.8.8.8
-      - 1.1.1.1
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    network_mode: "host"
+      ALCHEMY_API_KEY: ${ALCHEMY_API_KEY:-}
+      AEGIS_RPC_URL: ${AEGIS_RPC_URL:-}
+      PIMLICO_API_KEY: ${PIMLICO_API_KEY:?set PIMLICO_API_KEY in .env}
+      # The owner key is NOT passed here. Submission uses the stored session-key
+      # approval and signs with the session key alone; the owner key is needed
+      # only by the one-time bootstrap scripts, which run on the host.
+      SESSION_KEY_PRIVATE_KEY: ${SESSION_KEY_PRIVATE_KEY:?set SESSION_KEY_PRIVATE_KEY in .env}
+      IDENTITY_PORT: "8200"
     volumes:
-      - ./shared:/app/shared
-    # Do not start automatically on `docker-compose up` unless explicitly targeted
-    profiles:
-      - init
+      # Read-only: the service reads deployed.json and the approval blob; only
+      # the host-side bootstrap scripts write them.
+      - ./shared:/app/shared:ro
+    networks:
+      - aegis-internal
+      - aegis-egress
+
+  # ---------------------------------------------------------------------------
+  # Railgun sidecar — private execution
+  # ---------------------------------------------------------------------------
+  # ISOLATION REQUIREMENT: no `ports:` mapping, ever. This process holds the
+  # mnemonic controlling the shielded balance. It binds 0.0.0.0 inside the
+  # container because Docker networking requires it; reachability is constrained
+  # by the network, not by the bind address.
+  railgun-sidecar:
+    build:
+      context: .
+      dockerfile: railgun-sidecar/Dockerfile
+    image: aegis-railgun-sidecar:latest
+    container_name: aegis-railgun-sidecar
+    restart: unless-stopped
+    environment:
+      ALCHEMY_API_KEY: ${ALCHEMY_API_KEY:-}
+      AEGIS_RPC_URL: ${AEGIS_RPC_URL:-}
+      RAILGUN_WALLET_MNEMONIC: ${RAILGUN_WALLET_MNEMONIC:?set RAILGUN_WALLET_MNEMONIC in .env}
+      RAILGUN_TEST_SIGNER_KEY: ${RAILGUN_TEST_SIGNER_KEY:?set RAILGUN_TEST_SIGNER_KEY in .env}
+      RAILGUN_POI_NODE_URL: ${RAILGUN_POI_NODE_URL:-}
+      RAILGUN_ENGINE_DB_PATH: /data/railgun
+      RAILGUN_VERBOSE: ${RAILGUN_VERBOSE:-false}
+    volumes:
+      - ./shared:/app/shared:ro
+      - railgun-data:/data/railgun
+    networks:
+      - aegis-internal
+      # Required: the engine syncs the merkletree from the Railgun squid
+      # subgraph and broadcasts through a Sepolia RPC. Outbound only — nothing
+      # can reach in, because no port is published.
+      - aegis-egress
 
 networks:
-  internal_net:
+  aegis-internal:
+    driver: bridge
     internal: true
+  aegis-egress:
+    driver: bridge
+
+volumes:
+  dstack-sockets:
+  railgun-data:

@@ -1,21 +1,34 @@
 {
+  "$comment": [
+    "Session-key policy for the Aegis ERC-4337 smart account.",
+    "Read by identity/src/sessionKey.ts when building the ZeroDev permission validator,",
+    "and by scripts/verify_deployment.sh when checking the live configuration.",
+    "The target address is NOT stored here: it lives in deployed.json, which the deploy",
+    "script writes. Duplicating it would let the two drift and scope a key to a stale vault."
+  ],
   "sessionKeyPolicy": {
     "maxExecutionsPerDay": 1,
-    "valueLimit": "0",
+    "rateLimitIntervalSeconds": 86400,
+    "valueLimitWei": "0",
     "withdrawalPermissions": "NONE",
+    "callPolicyVersion": "0.0.4",
     "allowedSelectors": [
       {
-        "selector": "0x7f1a1e28",
-        "name": "rebalance(bytes32,bytes)",
-        "note": "The only function the session key is permitted to call on AegisVault"
+        "selector": "0xe7ef57de",
+        "signature": "rebalance(bytes32,bytes)",
+        "target": "AegisVault",
+        "note": "The only function the session key may call, on the only contract it may call."
       }
     ],
-    "allowedTargets": [
-      {
-        "name": "AegisVault",
-        "address": "PLACEHOLDER — populated after Prompt 2 deployment, see shared/config/deployed.json"
-      }
-    ],
-    "rationale": "Zero native-value transfer, single daily execution, and selector-scoped targeting ensure the session key can only log a rebalance decision hash — never move funds directly."
+    "rationale": [
+      "Three independent constraints, each sufficient on its own to stop fund movement:",
+      "1. valueLimitWei 0  - the account cannot attach ETH to the call.",
+      "2. selector scoping - only rebalance(bytes32,bytes) is reachable; that function",
+      "   emits an event and writes a replay marker, and touches no balances.",
+      "3. target scoping   - only AegisVault is reachable, and AegisVault declares no",
+      "   function that can move a token or ETH (asserted in AegisVault.t.sol).",
+      "The rate limit is an availability control rather than a safety one: it bounds how",
+      "often a compromised enclave can write to the log, not what it can take."
+    ]
   }
 }

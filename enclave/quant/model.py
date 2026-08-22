@@ -1,28 +1,35 @@
 """
-Aegis Enclave — SLM Allocation Layer
+Aegis Enclave — SLM allocation layer.
 
-Calls a local Ollama instance running llama3.2:1b to produce portfolio
-allocation decisions based on the deterministic signal layer's output.
+Calls a local Ollama instance (llama3.2:1b, baked into the image at build time
+so the weights are covered by the TEE measurement) to turn deterministic signal
+output into a portfolio allocation.
 
-The SLM receives structured signal data (not raw prices) and must return
-a strict JSON schema. Includes retry logic for malformed output (max 3).
+The model sees the signal layer's output, never raw prices. That keeps the
+prompt small and stable, and it means the non-deterministic component operates
+on an already-audited summary rather than on unbounded market data.
 """
+
+from __future__ import annotations
 
 import json
 import os
-from typing import Any
+from typing import Any, Mapping
 
 import ollama
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-
-_MODEL = "llama3.2:1b"
-_MAX_RETRIES = 3
+_MODEL = os.environ.get("AEGIS_SLM_MODEL", "llama3.2:1b")
+_MAX_RETRIES = int(os.environ.get("AEGIS_SLM_MAX_RETRIES", "3"))
 _OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
+_TEMPERATURE = float(os.environ.get("AEGIS_SLM_TEMPERATURE", "0.2"))
 
-# The system prompt is specified exactly by the Aegis spec — do not deviate.
+# Allocations are normalised when they sum to within this of 1.0; beyond it the
+# response is rejected as a schema violation rather than silently rescaled.
+_SUM_TOLERANCE = 0.05
+
+# Specified exactly by the Aegis design. Do not reword: the TEE measurement
+# covers this file, so any edit changes the enclave identity and invalidates the
+# deployed on-chain measurement until it is rotated.
 SYSTEM_PROMPT = (
     "You are a quantitative portfolio rebalancing engine. You will receive JSON "
     "market data for a fixed set of whitelisted assets. Respond ONLY with valid "
@@ -32,14 +39,10 @@ SYSTEM_PROMPT = (
     "Do not include any text outside the JSON object."
 )
 
-# JSON schema for structured output enforcement via Ollama's format parameter.
 _OUTPUT_SCHEMA = {
     "type": "object",
     "properties": {
-        "allocations": {
-            "type": "object",
-            "additionalProperties": {"type": "number"},
-        },
+        "allocations": {"type": "object", "additionalProperties": {"type": "number"}},
         "rationale": {"type": "string"},
         "confidence": {"type": "number"},
     },
@@ -47,128 +50,168 @@ _OUTPUT_SCHEMA = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Schema validation
-# ---------------------------------------------------------------------------
+class SLMError(ValueError):
+    """Raised when the model cannot produce a schema-valid allocation."""
+
 
 def validate_allocation(
-    result: dict[str, Any],
+    result: Mapping[str, Any],
     expected_symbols: list[str],
 ) -> tuple[bool, str]:
     """
-    Validate that the SLM output conforms to the expected schema.
+    Check an SLM response against the allocation schema.
 
-    Checks:
-    - Required keys exist (allocations, rationale, confidence)
-    - All expected asset symbols are present in allocations
-    - Allocation values are floats in [0, 1]
-    - Allocations sum to ~1.0 (tolerance: 0.05)
-    - Confidence is a float in [0, 1]
-    - Rationale is a non-empty string
+    Returns (ok, reason). The reason is fed back to the model on retry, which
+    turns a blind resample into a corrective one.
     """
-    # Check required keys
     for key in ("allocations", "rationale", "confidence"):
         if key not in result:
-            return False, f"Missing required key: {key}"
+            return False, "Missing required key: " + key
 
     allocations = result["allocations"]
     if not isinstance(allocations, dict):
-        return False, "allocations must be a dict"
+        return False, "allocations must be an object"
 
-    # Check all expected symbols are present
-    for sym in expected_symbols:
-        if sym not in allocations:
-            return False, f"Missing allocation for symbol: {sym}"
+    for symbol in expected_symbols:
+        if symbol not in allocations:
+            return False, "Missing allocation for symbol: " + symbol
 
-    # Check allocation values
-    for sym, val in allocations.items():
-        if not isinstance(val, (int, float)):
-            return False, f"Allocation for {sym} is not a number: {val}"
-        if val < 0.0 or val > 1.0:
-            return False, f"Allocation for {sym} out of range [0,1]: {val}"
+    # An allocation to something outside the whitelist is a hard failure, not a
+    # rounding issue: the vault can only ever hold whitelisted assets, so acting
+    # on it would be impossible and dropping it would silently change the split.
+    unexpected = [s for s in allocations if s not in expected_symbols]
+    if unexpected:
+        return False, "Allocation names non-whitelisted assets: " + ", ".join(sorted(unexpected))
 
-    # Check sum ≈ 1.0
-    total = sum(allocations.values())
-    if abs(total - 1.0) > 0.05:
-        return False, f"Allocations sum to {total}, expected ~1.0"
+    for symbol, value in allocations.items():
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return False, "Allocation for " + symbol + " is not a number: " + repr(value)
+        if value < 0.0 or value > 1.0:
+            return False, "Allocation for " + symbol + " out of range [0,1]: " + repr(value)
 
-    # Check confidence
+    total = sum(float(v) for v in allocations.values())
+    if abs(total - 1.0) > _SUM_TOLERANCE:
+        return False, "Allocations sum to " + repr(round(total, 6)) + ", expected ~1.0"
+
     confidence = result["confidence"]
-    if not isinstance(confidence, (int, float)):
-        return False, f"confidence is not a number: {confidence}"
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+        return False, "confidence is not a number: " + repr(confidence)
     if confidence < 0.0 or confidence > 1.0:
-        return False, f"confidence out of range [0,1]: {confidence}"
+        return False, "confidence out of range [0,1]: " + repr(confidence)
 
-    # Check rationale
     rationale = result["rationale"]
-    if not isinstance(rationale, str) or len(rationale.strip()) == 0:
+    if not isinstance(rationale, str) or not rationale.strip():
         return False, "rationale must be a non-empty string"
 
     return True, "valid"
 
 
-# ---------------------------------------------------------------------------
-# SLM inference
-# ---------------------------------------------------------------------------
-
-def query_slm(
-    signals: dict[str, dict[str, Any]],
-) -> dict[str, Any]:
+def normalise_allocations(result: Mapping[str, Any]) -> dict[str, Any]:
     """
-    Send deterministic signal data to the local Ollama SLM and parse the response.
+    Rescale allocations to sum to exactly 1.0.
 
-    The SLM receives the signal.py output as structured JSON input, NOT raw prices.
-    Retries up to 3 times on malformed output, then raises.
+    Only ever called on a response that already validated, so the sum is already
+    within _SUM_TOLERANCE of 1.0. This exists so the decision hash covers an
+    exact split rather than one carrying the model's rounding, which keeps the
+    attested decision reproducible.
+    """
+    allocations = result["allocations"]
+    total = sum(float(v) for v in allocations.values())
+    if total <= 0:
+        raise SLMError("allocations sum to zero after validation, which is impossible")
 
-    Args:
-        signals: Dict mapping symbol → signal summary (from signal.compute_all_signals).
+    normalised = dict(result)
+    normalised["allocations"] = {
+        symbol: round(float(value) / total, 6) for symbol, value in allocations.items()
+    }
+    normalised["confidence"] = round(float(result["confidence"]), 6)
+    return normalised
 
-    Returns:
-        Validated allocation dict: { allocations, rationale, confidence }
+
+def _chat(messages: list[dict[str, str]]) -> str:
+    """
+    One round-trip to the local Ollama server.
+
+    Isolated into its own function so tests can replace the transport without
+    reaching into the ollama package internals, and so the retry loop has
+    exactly one failure point to reason about.
+    """
+    client = ollama.Client(host=_OLLAMA_HOST)
+    response = client.chat(
+        model=_MODEL,
+        messages=messages,
+        format=_OUTPUT_SCHEMA,
+        options={"temperature": _TEMPERATURE},
+    )
+    return response["message"]["content"].strip()
+
+
+def query_slm(signals: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    """
+    Ask the SLM for an allocation over the whitelisted assets.
+
+    Retries up to _MAX_RETRIES times, appending the previous invalid output and
+    the specific validation failure to the conversation each time, then raises.
 
     Raises:
-        ValueError: If all retries are exhausted without valid output.
+        SLMError: if no schema-valid allocation was produced. The caller must
+            surface this rather than substituting a default allocation — an
+            attested decision the model never made would defeat the entire point
+            of the attestation chain.
     """
-    expected_symbols = list(signals.keys())
-    user_message = json.dumps(signals, indent=2, default=str)
+    if not signals:
+        raise SLMError("no signals supplied; refusing to request an allocation")
 
-    last_error = ""
+    expected_symbols = list(signals.keys())
+    messages: list[dict[str, str]] = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": json.dumps(signals, indent=2, default=str)},
+    ]
+
+    last_error = "no attempts were made"
+
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
-            client = ollama.Client(host=_OLLAMA_HOST)
-            response = client.chat(
-                model=_MODEL,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_message},
-                ],
-                format=_OUTPUT_SCHEMA,
-                options={"temperature": 0.2},
-            )
+            raw_content = _chat(messages)
+        except Exception as exc:  # transport error, model missing, server down
+            last_error = "attempt " + str(attempt) + ": Ollama call failed: " + str(exc)
+            print("[model] " + last_error)
+            continue
 
-            raw_content = response.message.content.strip()
-
-            # Parse JSON
+        try:
             result = json.loads(raw_content)
-
-            # Validate schema
-            valid, reason = validate_allocation(result, expected_symbols)
-            if valid:
-                return result
-            else:
-                last_error = f"Attempt {attempt}: schema validation failed — {reason}"
-                print(f"[model] WARNING: {last_error}")
-
         except json.JSONDecodeError as exc:
-            last_error = f"Attempt {attempt}: JSON parse error — {exc}"
-            print(f"[model] WARNING: {last_error}")
-        except Exception as exc:
-            import traceback
-            traceback.print_exc()
-            last_error = f"Attempt {attempt}: Ollama error — {exc}"
-            print(f"[model] WARNING: {last_error}")
+            last_error = "attempt " + str(attempt) + ": response was not JSON: " + str(exc)
+            print("[model] " + last_error)
+            messages.append({"role": "assistant", "content": raw_content})
+            messages.append(
+                {
+                    "role": "user",
+                    "content": "That was not valid JSON. Respond with the JSON object only.",
+                }
+            )
+            continue
 
-    raise ValueError(
-        f"SLM failed to produce valid output after {_MAX_RETRIES} retries. "
-        f"Last error: {last_error}"
+        valid, reason = validate_allocation(result, expected_symbols)
+        if valid:
+            return normalise_allocations(result)
+
+        last_error = "attempt " + str(attempt) + ": schema validation failed: " + reason
+        print("[model] " + last_error)
+        messages.append({"role": "assistant", "content": raw_content})
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "That response was rejected: " + reason + ". Return corrected JSON "
+                    "for exactly these assets: " + ", ".join(expected_symbols) + "."
+                ),
+            }
+        )
+
+    raise SLMError(
+        "SLM produced no valid allocation in "
+        + str(_MAX_RETRIES)
+        + " attempts. Last error: "
+        + last_error
     )

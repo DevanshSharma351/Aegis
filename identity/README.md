@@ -1,58 +1,110 @@
-# Aegis Identity (Workstream B)
+# Identity — ERC-4337 account and session key
 
-This directory contains the identity layer for Aegis, powered by ERC-4337 (ZeroDev Kernel smart accounts) and Pimlico (Bundler/Paymaster).
+Owns the smart account that submits rebalances, and the session key scoped to do
+nothing else.
 
-The core function of this workstream is to generate and provision a restricted Session Key that allows the enclave (Workstream A) to execute rebalance decisions on the `AegisVault` (Workstream D) without having full control over the owner account.
+## The one thing to get right
 
-## Setup
+`AegisVault.sessionKey` must hold the **smart account** address, not the
+session-key EOA.
 
-1. Copy the root `.env.example` to `.env` and fill in the required keys:
-   - `ALCHEMY_API_KEY`: RPC endpoint (Sepolia)
-   - `PIMLICO_API_KEY`: Bundler/Paymaster
-   - `ZERODEV_PROJECT_ID`: ZeroDev project (Kernel v3)
-   - `AEGIS_OWNER_PRIVATE_KEY`: Your EOA that owns the smart account and Vault.
-   - `SESSION_KEY_PRIVATE_KEY`: The throwaway private key for the session key.
+A UserOperation executes with `msg.sender == account`. The EOA that signs it
+never appears as the caller. Bind the EOA and every rebalance reverts
+`NotSessionKey()` — permanently, because `setSessionKey` is one-shot.
 
-2. Install dependencies:
-   ```bash
-   npm install
-   ```
-
-## Bootstrap Sequence (The Circular Dependency)
-
-Because the Session Key needs to know the Vault's address to lock down its permissions (target restriction), but the Vault needs the Session Key's address to enforce access control, we must use a **two-phase deployment**.
-
-Follow this exact sequence to bootstrap the system:
-
-### 1. Deploy the Vault (Workstream D)
-First, ensure that `AegisVault` has been deployed via Foundry and that `shared/config/deployed.json` exists with the `AegisVault` address. At this stage, the Vault's `sessionKey` state variable is unset (`address(0)`).
-
-### 2. Generate the Session Key
-Run the `createSessionKey` script to generate a session key scoped precisely to the Vault address deployed in Step 1.
-
-```bash
-npx tsx src/createSessionKey.ts
+```
+owner EOA          0x975a…c40   signs the approval, never used at runtime
+session key EOA    0x4713…D63   signs UserOperations, never msg.sender
+smart account      0x61e7…662   IS msg.sender   <- this is what the vault binds
 ```
 
-This will print the **Session Key Public Address** and serialize the permission state. The private key remains loaded from the `.env` (in production, it should be derived from the TEE using `dstack-sdk`).
+## Approve once, execute forever
 
-### 3. Bind the Session Key to the Vault
-Now that the session key is created, the Vault Owner must register it on the `AegisVault` contract. **This action is irreversible.**
+A ZeroDev permission validator must be *enabled* on the Kernel account, and
+enabling it needs a signature from the owner's sudo validator. There are two ways
+to arrange that:
+
+**(a)** Attach `{ sudo: ownerValidator, regular: permissionValidator }` on every
+submission. The owner key is then present at every signing — so the session key
+provides no isolation at all.
+
+**(b)** Do it once. Build the account with both plugins, serialise it (the blob
+carries the owner's enable signature), and store it. Afterwards, load the blob
+with only the session-key signer.
+
+This service implements (b). `approveSessionKey.ts` runs once with the owner
+online; `submitUserOp.ts` runs on every rebalance and never reads
+`AEGIS_OWNER_PRIVATE_KEY`. The compose file does not pass the owner key into the
+container at all.
+
+The approval blob (`shared/config/session-key-approval.json`) is not a secret —
+it is an enable signature scoped to one permission id. Without the session key's
+private key it authorises nothing.
+
+## Bootstrap
 
 ```bash
-npx tsx src/setVaultSessionKey.ts
+npm run account              # 1. derive the counterfactual account address
+npm run session-key:approve  # 2. build the approval, scoped to the vault
+npm run session-key:bind     # 3. setSessionKey(smartAccount) — IRREVERSIBLE
+npm run state                # 4. verify
 ```
 
-You will be prompted to confirm the transaction. Once mined, the Vault is permanently locked to this session key.
+`scripts/bootstrap.sh` runs all four with the checks in between.
 
-### 4. Verify the Configuration
-Verify the setup by reading the Vault contract on-chain (e.g., via Sepolia Etherscan or `cast`):
-```bash
-cast call <VAULT_ADDRESS> "sessionKey()(address)" --rpc-url https://eth-sepolia.g.alchemy.com/v2/$ALCHEMY_API_KEY
-```
-Ensure the returned address matches the Session Key Public Address generated in Step 2.
+Step 3 simulates before sending and reads the value back afterwards. This is the
+one write in the system that cannot be retried, so it is worth the extra call.
 
-## Security Considerations
+## The policy
 
-- **Private Keys**: The `SESSION_KEY_PRIVATE_KEY` must never be logged or committed. In production, `deriveSessionKeyFromTEE()` in `createSessionKey.ts` must be upgraded to dynamically derive the key using `dstack-sdk` so that it is bound to the enclave's hardware measurement.
-- **On-chain Enforcement**: While the ZeroDev SDK simulates policy enforcement client-side, the real security backstop is the on-chain session key validator module. It will revert any UserOperations that violate the rate limit or allowed selectors.
+From `shared/config/policy.json`, enforced on-chain by the Kernel permission
+module during `validateUserOp`:
+
+| Constraint | Value |
+|---|---|
+| target | `AegisVault` only |
+| selector | `rebalance(bytes32,bytes)` = `0xe7ef57de` |
+| value limit | 0 wei |
+| rate limit | 1 per 86400s |
+
+`assertPolicyMatchesAbi()` compares the declared selector against the compiled
+ABI at startup. The policy file previously declared `0x7f1a1e28` — a selector for
+no function that exists — and nothing caught it, because nothing compared the
+two.
+
+## HTTP API
+
+Internal network only.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /health` | liveness: chain id, block, plus `sessionKeyReady` |
+| `GET /state` | full on-chain view with consistency checks |
+| `POST /submit-rebalance` | `{ decisionHash, attestationProof }` |
+
+`/health` deliberately returns 200 before the bootstrap has run, reporting
+`sessionKeyReady: false`. Failing liveness on a missing approval would deadlock
+`docker compose up --wait`, since the bootstrap needs the stack already running.
+
+`/submit-rebalance` pre-flights before signing: it confirms the vault is bound to
+this account and that the decision has not already been executed. A
+UserOperation that reverts on-chain still costs the paymaster gas and produces a
+far less legible error than a local check. It returns 409 for an
+already-executed decision — a distinct, expected outcome the orchestrator
+reports rather than retries.
+
+## Session key storage
+
+`SESSION_KEY_PRIVATE_KEY` is a plaintext environment variable. That is the known
+gap.
+
+The production path is derivation inside the TEE via `DstackClient.get_key`, so
+the key exists only in enclave memory and is reproducible from the enclave's
+identity — meaning a different enclave build derives a different key and cannot
+inherit this one's authority. See the comment on `sessionKeyAccount()` in
+`src/clients.ts`.
+
+The blast radius is bounded by design rather than by this secret: the key can
+call one function, with zero value, once a day, on a contract with no way to
+move funds. A leak lets someone write junk to the execution log. It does not let
+them take anything.

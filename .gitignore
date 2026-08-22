@@ -1,10 +1,37 @@
+# Secrets
 .env
 .env.example
-.pytest_cache
-Microsoft
-dstack-sim
-prompt_utf8.txt
-prompt.txt
-node_modules
-__pycache__
 
+# Dependencies / build output
+node_modules/
+dist/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Foundry
+contracts/out/
+contracts/cache/
+contracts/broadcast/
+
+# Railgun engine state and Groth16 artifacts (regenerable, large)
+.railgun/
+railgun-sidecar/engine.db/
+railgun-sidecar/artifacts/
+
+# The simulator binary is ~26 MB; fetch it with scripts/fetch_simulator.sh
+simulator/bin/
+
+# Vendored dstack checkout, used only as a source for the simulator binary
+dstack-sim/
+
+# Local scratch
+Microsoft/
+tests/
+prompt.txt
+prompt_utf8.txt
+
+# Session-key approval: NOT a secret (it is an enable signature, useless without
+# SESSION_KEY_PRIVATE_KEY), but it is per-deployment and regenerable, so it is
+# left untracked to avoid committing one deployment's blob into another's tree.
+shared/config/session-key-approval.json

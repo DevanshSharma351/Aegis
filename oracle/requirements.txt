@@ -1,0 +1,14 @@
+# Aegis attestation oracle dependencies.
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+requests==2.32.3
+
+# Signing. eth-account pulls eth-utils and eth-hash, which the shared
+# aegis_tdx package uses for keccak256.
+eth-account==0.13.4
+eth-utils==5.1.0
+eth-hash[pycryptodome]==0.7.1
+
+pytest==8.3.4
+httpx==0.28.1

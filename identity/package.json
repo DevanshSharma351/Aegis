@@ -1,34 +1,33 @@
 {
-  "name": "identity",
+  "name": "aegis-identity",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "directories": {
-    "test": "test"
-  },
+  "description": "ERC-4337 smart account and session key for Aegis",
+  "private": true,
+  "type": "commonjs",
   "scripts": {
-    "start:submit": "npx tsx src/submitUserOp.ts",
-    "session-key": "npx tsx src/createSessionKey.ts",
+    "start": "tsx src/server.ts",
+    "account": "tsx src/createAccount.ts",
+    "session-key:approve": "tsx src/approveSessionKey.ts",
+    "session-key:bind": "tsx src/setVaultSessionKey.ts",
+    "submit": "tsx src/submitUserOp.ts",
+    "state": "tsx src/printState.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
   "dependencies": {
     "@zerodev/ecdsa-validator": "^5.4.9",
     "@zerodev/permissions": "^5.6.3",
     "@zerodev/sdk": "^5.5.10",
     "dotenv": "^17.4.2",
-    "permissionless": "^0.1.44",
+    "express": "^5.2.1",
     "tslib": "^2.8.1",
-    "viem": "^2.21.36"
+    "viem": "^2.55.19"
   },
   "devDependencies": {
-    "@types/node": "^26.2.0",
+    "@types/express": "^5.0.6",
+    "@types/node": "^22.10.0",
     "tsx": "^4.23.12",
-    "typescript": "^7.0.2",
-    "vitest": "^4.1.11"
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
   }
 }

@@ -1,35 +1,33 @@
 """
-Tests for the SLM allocation layer (quant/model.py).
+Tests for the SLM allocation layer.
 
-These tests verify that:
-- The SLM output schema is validated correctly
-- Valid outputs pass validation
-- Invalid outputs are rejected
-- The retry logic works as expected
-
-NOTE: These tests mock the Ollama call to avoid requiring a running
-Ollama instance. They test the validation and retry logic, not the
-SLM inference itself. To test actual inference, run the enclave
-with Ollama running locally.
+The Ollama transport is replaced at `quant.model._chat`, which exists as a
+separate function for exactly this reason. The previous tests patched
+`quant.model.ollama` and asserted on `ollama.chat`, but the code calls
+`ollama.Client(host=...).chat(...)` — so the assertions were checking a call
+that never happened, and the mock's auto-created attributes made them pass.
 """
 
 import json
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 
-from quant.model import validate_allocation, query_slm, _MAX_RETRIES
+from quant.model import (
+    SLMError,
+    SYSTEM_PROMPT,
+    _MAX_RETRIES,
+    normalise_allocations,
+    query_slm,
+    validate_allocation,
+)
 
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
 
 EXPECTED_SYMBOLS = ["WETH", "USDC"]
 
 VALID_ALLOCATION = {
     "allocations": {"WETH": 0.6, "USDC": 0.4},
-    "rationale": "WETH shows bullish momentum with SMA crossover.",
+    "rationale": "WETH shows bullish momentum with an SMA crossover.",
     "confidence": 0.75,
 }
 
@@ -55,205 +53,169 @@ SAMPLE_SIGNALS = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Validation tests
-# ---------------------------------------------------------------------------
-
 class TestValidateAllocation:
-    def test_valid_allocation_passes(self):
-        valid, reason = validate_allocation(VALID_ALLOCATION, EXPECTED_SYMBOLS)
-        assert valid is True
-        assert reason == "valid"
+    def test_valid_passes(self):
+        assert validate_allocation(VALID_ALLOCATION, EXPECTED_SYMBOLS) == (True, "valid")
 
-    def test_missing_allocations_key(self):
-        invalid = {"rationale": "test", "confidence": 0.5}
-        valid, reason = validate_allocation(invalid, EXPECTED_SYMBOLS)
-        assert valid is False
-        assert "Missing required key: allocations" in reason
+    @pytest.mark.parametrize("missing", ["allocations", "rationale", "confidence"])
+    def test_missing_required_key(self, missing):
+        payload = {k: v for k, v in VALID_ALLOCATION.items() if k != missing}
+        ok, reason = validate_allocation(payload, EXPECTED_SYMBOLS)
+        assert ok is False
+        assert f"Missing required key: {missing}" in reason
 
-    def test_missing_rationale_key(self):
-        invalid = {"allocations": {"WETH": 0.5, "USDC": 0.5}, "confidence": 0.5}
-        valid, reason = validate_allocation(invalid, EXPECTED_SYMBOLS)
-        assert valid is False
-        assert "Missing required key: rationale" in reason
-
-    def test_missing_confidence_key(self):
-        invalid = {
-            "allocations": {"WETH": 0.5, "USDC": 0.5},
-            "rationale": "test",
-        }
-        valid, reason = validate_allocation(invalid, EXPECTED_SYMBOLS)
-        assert valid is False
-        assert "Missing required key: confidence" in reason
-
-    def test_missing_symbol_in_allocations(self):
-        invalid = {
-            "allocations": {"WETH": 1.0},
-            "rationale": "test",
-            "confidence": 0.5,
-        }
-        valid, reason = validate_allocation(invalid, EXPECTED_SYMBOLS)
-        assert valid is False
+    def test_missing_symbol(self):
+        payload = dict(VALID_ALLOCATION, allocations={"WETH": 1.0})
+        ok, reason = validate_allocation(payload, EXPECTED_SYMBOLS)
+        assert ok is False
         assert "Missing allocation for symbol: USDC" in reason
 
-    def test_allocation_out_of_range_negative(self):
-        invalid = {
-            "allocations": {"WETH": -0.1, "USDC": 1.1},
-            "rationale": "test",
-            "confidence": 0.5,
-        }
-        valid, reason = validate_allocation(invalid, EXPECTED_SYMBOLS)
-        assert valid is False
+    def test_rejects_non_whitelisted_asset(self):
+        # An allocation the vault could never act on. Silently dropping it would
+        # change the effective split without anyone noticing.
+        payload = dict(VALID_ALLOCATION, allocations={"WETH": 0.5, "USDC": 0.3, "DOGE": 0.2})
+        ok, reason = validate_allocation(payload, EXPECTED_SYMBOLS)
+        assert ok is False
+        assert "non-whitelisted" in reason
+        assert "DOGE" in reason
+
+    @pytest.mark.parametrize("bad", [-0.1, 1.5])
+    def test_allocation_out_of_range(self, bad):
+        payload = dict(VALID_ALLOCATION, allocations={"WETH": bad, "USDC": 0.4})
+        ok, reason = validate_allocation(payload, EXPECTED_SYMBOLS)
+        assert ok is False
         assert "out of range" in reason
 
-    def test_allocation_out_of_range_above_one(self):
-        invalid = {
-            "allocations": {"WETH": 1.5, "USDC": 0.5},
-            "rationale": "test",
-            "confidence": 0.5,
-        }
-        valid, reason = validate_allocation(invalid, EXPECTED_SYMBOLS)
-        assert valid is False
-        assert "out of range" in reason
-
-    def test_allocations_dont_sum_to_one(self):
-        invalid = {
-            "allocations": {"WETH": 0.3, "USDC": 0.3},
-            "rationale": "test",
-            "confidence": 0.5,
-        }
-        valid, reason = validate_allocation(invalid, EXPECTED_SYMBOLS)
-        assert valid is False
+    def test_sum_far_from_one_rejected(self):
+        payload = dict(VALID_ALLOCATION, allocations={"WETH": 0.3, "USDC": 0.3})
+        ok, reason = validate_allocation(payload, EXPECTED_SYMBOLS)
+        assert ok is False
         assert "sum to" in reason
 
-    def test_allocations_sum_within_tolerance(self):
-        """Tolerance is 0.05 — this should pass."""
-        marginal = {
-            "allocations": {"WETH": 0.52, "USDC": 0.50},
-            "rationale": "test",
-            "confidence": 0.5,
-        }
-        valid, _ = validate_allocation(marginal, EXPECTED_SYMBOLS)
-        assert valid is True
+    def test_sum_within_tolerance_accepted(self):
+        payload = dict(VALID_ALLOCATION, allocations={"WETH": 0.52, "USDC": 0.50})
+        ok, _ = validate_allocation(payload, EXPECTED_SYMBOLS)
+        assert ok is True
 
     def test_confidence_out_of_range(self):
-        invalid = {
-            "allocations": {"WETH": 0.5, "USDC": 0.5},
-            "rationale": "test",
-            "confidence": 1.5,
-        }
-        valid, reason = validate_allocation(invalid, EXPECTED_SYMBOLS)
-        assert valid is False
+        payload = dict(VALID_ALLOCATION, confidence=1.5)
+        ok, reason = validate_allocation(payload, EXPECTED_SYMBOLS)
+        assert ok is False
         assert "confidence out of range" in reason
 
-    def test_empty_rationale(self):
-        invalid = {
-            "allocations": {"WETH": 0.5, "USDC": 0.5},
-            "rationale": "",
-            "confidence": 0.5,
-        }
-        valid, reason = validate_allocation(invalid, EXPECTED_SYMBOLS)
-        assert valid is False
+    def test_empty_rationale_rejected(self):
+        payload = dict(VALID_ALLOCATION, rationale="   ")
+        ok, reason = validate_allocation(payload, EXPECTED_SYMBOLS)
+        assert ok is False
         assert "rationale" in reason
 
-    def test_non_numeric_allocation(self):
-        invalid = {
-            "allocations": {"WETH": "half", "USDC": 0.5},
-            "rationale": "test",
-            "confidence": 0.5,
-        }
-        valid, reason = validate_allocation(invalid, EXPECTED_SYMBOLS)
-        assert valid is False
+    def test_non_numeric_allocation_rejected(self):
+        payload = dict(VALID_ALLOCATION, allocations={"WETH": "half", "USDC": 0.5})
+        ok, reason = validate_allocation(payload, EXPECTED_SYMBOLS)
+        assert ok is False
+        assert "not a number" in reason
+
+    def test_boolean_is_not_a_number(self):
+        # bool is a subclass of int in Python; True would otherwise pass as 1.0.
+        payload = dict(VALID_ALLOCATION, allocations={"WETH": True, "USDC": 0.0})
+        ok, reason = validate_allocation(payload, EXPECTED_SYMBOLS)
+        assert ok is False
         assert "not a number" in reason
 
 
-# ---------------------------------------------------------------------------
-# SLM query tests (mocked)
-# ---------------------------------------------------------------------------
+class TestNormalise:
+    def test_sums_to_exactly_one(self):
+        result = normalise_allocations(dict(VALID_ALLOCATION, allocations={"WETH": 0.52, "USDC": 0.50}))
+        assert abs(sum(result["allocations"].values()) - 1.0) < 1e-9
+
+    def test_preserves_relative_weights(self):
+        result = normalise_allocations(dict(VALID_ALLOCATION, allocations={"WETH": 0.6, "USDC": 0.4}))
+        assert result["allocations"]["WETH"] == pytest.approx(0.6, abs=1e-6)
+
+    def test_does_not_mutate_input(self):
+        original = dict(VALID_ALLOCATION, allocations={"WETH": 0.52, "USDC": 0.50})
+        snapshot = json.dumps(original, sort_keys=True)
+        normalise_allocations(original)
+        assert json.dumps(original, sort_keys=True) == snapshot
+
 
 class TestQuerySLM:
-    def _mock_ollama_response(self, content: str):
-        """Create a mock Ollama response object."""
-        mock_resp = MagicMock()
-        mock_resp.message.content = content
-        return mock_resp
+    def test_valid_response_is_returned_normalised(self):
+        with patch("quant.model._chat", return_value=json.dumps(VALID_ALLOCATION)) as chat:
+            result = query_slm(SAMPLE_SIGNALS)
 
-    @patch("quant.model.ollama")
-    def test_valid_response_returns_allocation(self, mock_ollama):
-        mock_ollama.chat.return_value = self._mock_ollama_response(
-            json.dumps(VALID_ALLOCATION)
-        )
-        result = query_slm(SAMPLE_SIGNALS)
-        assert result["allocations"]["WETH"] == 0.6
-        assert result["allocations"]["USDC"] == 0.4
-        assert "rationale" in result
-        assert "confidence" in result
+        assert chat.call_count == 1
+        assert set(result["allocations"]) == {"WETH", "USDC"}
+        assert abs(sum(result["allocations"].values()) - 1.0) < 1e-9
 
-    @patch("quant.model.ollama")
-    def test_retries_on_invalid_json(self, mock_ollama):
-        """First two calls return invalid JSON, third returns valid."""
-        mock_ollama.chat.side_effect = [
-            self._mock_ollama_response("not json at all"),
-            self._mock_ollama_response("{broken json"),
-            self._mock_ollama_response(json.dumps(VALID_ALLOCATION)),
+    def test_retries_on_invalid_json_then_succeeds(self):
+        responses = ["not json at all", "{broken json", json.dumps(VALID_ALLOCATION)]
+        with patch("quant.model._chat", side_effect=responses) as chat:
+            result = query_slm(SAMPLE_SIGNALS)
+
+        assert chat.call_count == 3
+        assert result["allocations"]["WETH"] == pytest.approx(0.6, abs=1e-6)
+
+    def test_retries_on_schema_violation(self):
+        responses = [
+            json.dumps({"allocations": {"WETH": 1.0}, "rationale": "one asset", "confidence": 0.5}),
+            json.dumps(VALID_ALLOCATION),
         ]
-        result = query_slm(SAMPLE_SIGNALS)
-        assert result["allocations"]["WETH"] == 0.6
-        assert mock_ollama.chat.call_count == 3
+        with patch("quant.model._chat", side_effect=responses) as chat:
+            result = query_slm(SAMPLE_SIGNALS)
 
-    @patch("quant.model.ollama")
-    def test_retries_on_schema_violation(self, mock_ollama):
-        """First call has missing symbol, second is valid."""
-        missing_symbol = {
-            "allocations": {"WETH": 1.0},
-            "rationale": "only one asset",
-            "confidence": 0.5,
-        }
-        mock_ollama.chat.side_effect = [
-            self._mock_ollama_response(json.dumps(missing_symbol)),
-            self._mock_ollama_response(json.dumps(VALID_ALLOCATION)),
-        ]
-        result = query_slm(SAMPLE_SIGNALS)
+        assert chat.call_count == 2
         assert "USDC" in result["allocations"]
-        assert mock_ollama.chat.call_count == 2
 
-    @patch("quant.model.ollama")
-    def test_raises_after_max_retries(self, mock_ollama):
-        """All retries return invalid output → raises ValueError."""
-        mock_ollama.chat.return_value = self._mock_ollama_response(
-            "I am not JSON"
-        )
-        with pytest.raises(ValueError, match="failed to produce valid output"):
+    def test_retry_feeds_the_failure_reason_back(self):
+        # A blind resample wastes an attempt. The rejection reason should reach
+        # the model so the next attempt can be corrective.
+        responses = [
+            json.dumps({"allocations": {"WETH": 1.0}, "rationale": "one asset", "confidence": 0.5}),
+            json.dumps(VALID_ALLOCATION),
+        ]
+        with patch("quant.model._chat", side_effect=responses) as chat:
             query_slm(SAMPLE_SIGNALS)
-        assert mock_ollama.chat.call_count == _MAX_RETRIES
 
-    @patch("quant.model.ollama")
-    def test_system_prompt_is_sent(self, mock_ollama):
-        """Verify the exact system prompt from the spec is used."""
-        mock_ollama.chat.return_value = self._mock_ollama_response(
-            json.dumps(VALID_ALLOCATION)
-        )
-        query_slm(SAMPLE_SIGNALS)
-        call_args = mock_ollama.chat.call_args
-        messages = call_args.kwargs.get("messages") or call_args[1].get("messages")
-        system_msg = messages[0]
-        assert system_msg["role"] == "system"
-        assert "quantitative portfolio rebalancing engine" in system_msg["content"]
-        assert "Do not include any text outside the JSON object" in system_msg["content"]
+        second_call_messages = chat.call_args_list[1].args[0]
+        follow_up = second_call_messages[-1]["content"]
+        assert "rejected" in follow_up
+        assert "USDC" in follow_up
 
-    @patch("quant.model.ollama")
-    def test_user_message_contains_signals(self, mock_ollama):
-        """Verify the SLM receives signal data (not raw prices) as input."""
-        mock_ollama.chat.return_value = self._mock_ollama_response(
-            json.dumps(VALID_ALLOCATION)
-        )
-        query_slm(SAMPLE_SIGNALS)
-        call_args = mock_ollama.chat.call_args
-        messages = call_args.kwargs.get("messages") or call_args[1].get("messages")
-        user_msg = messages[1]
-        assert user_msg["role"] == "user"
-        # The user message should contain signal data, not raw OHLC
-        content = user_msg["content"]
-        assert "sma_short" in content
-        assert "sma_crossover" in content
-        assert "zscore" in content
+    def test_raises_after_max_retries(self):
+        with patch("quant.model._chat", return_value="I am not JSON") as chat:
+            with pytest.raises(SLMError, match="no valid allocation"):
+                query_slm(SAMPLE_SIGNALS)
+
+        assert chat.call_count == _MAX_RETRIES
+
+    def test_transport_failure_is_retried_then_raises(self):
+        with patch("quant.model._chat", side_effect=ConnectionError("ollama is down")) as chat:
+            with pytest.raises(SLMError, match="Ollama call failed"):
+                query_slm(SAMPLE_SIGNALS)
+
+        assert chat.call_count == _MAX_RETRIES
+
+    def test_empty_signals_rejected_without_calling_the_model(self):
+        with patch("quant.model._chat") as chat:
+            with pytest.raises(SLMError, match="no signals"):
+                query_slm({})
+        chat.assert_not_called()
+
+    def test_system_prompt_is_sent_verbatim(self):
+        with patch("quant.model._chat", return_value=json.dumps(VALID_ALLOCATION)) as chat:
+            query_slm(SAMPLE_SIGNALS)
+
+        messages = chat.call_args.args[0]
+        assert messages[0]["role"] == "system"
+        assert messages[0]["content"] == SYSTEM_PROMPT
+
+    def test_model_receives_signals_not_raw_prices(self):
+        with patch("quant.model._chat", return_value=json.dumps(VALID_ALLOCATION)) as chat:
+            query_slm(SAMPLE_SIGNALS)
+
+        user_message = chat.call_args.args[0][1]
+        assert user_message["role"] == "user"
+        for field in ("sma_short", "sma_crossover", "zscore", "momentum"):
+            assert field in user_message["content"]
+        assert "open" not in json.loads(user_message["content"])["WETH"]

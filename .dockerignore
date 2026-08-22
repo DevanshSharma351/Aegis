@@ -1,0 +1,25 @@
+# Keep build contexts small: the enclave/identity/sidecar images all build from
+# the repository root so they can copy shared/, and without this every image
+# would drag in node_modules, the vendored dstack checkout, and the 26 MB
+# simulator binary.
+**/node_modules
+**/dist
+**/out
+**/cache
+**/__pycache__
+**/.pytest_cache
+**/*.pyc
+.git
+.env
+dstack-sim/
+simulator/bin/
+railgun-sidecar/engine.db
+.railgun/
+contracts/out/
+contracts/cache/
+contracts/broadcast/
+contracts/lib/
+Microsoft/
+prompt.txt
+prompt_utf8.txt
+frontend/

@@ -1,9 +1,38 @@
 {
+  "$comment": [
+    "Network parameters. Values are environment variable NAMES, not shell expansions --",
+    "the previous version embedded ${VAR:+...} bash syntax inside JSON, which nothing in",
+    "the repo could evaluate. Consumers read the named variable themselves; see",
+    "identity/src/config.ts and railgun-sidecar/src/config.ts for the resolution order."
+  ],
   "network": "sepolia",
   "chainId": 11155111,
-  "rpcUrl": "${ALCHEMY_API_KEY:+https://eth-sepolia.g.alchemy.com/v2/${ALCHEMY_API_KEY}}",
-  "rpcUrlFallback": "https://rpc.sepolia.org",
   "blockExplorer": "https://sepolia.etherscan.io",
-  "bundlerUrl": "${PIMLICO_API_KEY:+https://api.pimlico.io/v2/sepolia/rpc?apikey=${PIMLICO_API_KEY}}",
-  "note": "All values containing ${} are environment variable references — resolve at runtime, never commit real keys."
+  "rpc": {
+    "primaryEnvVar": "AEGIS_RPC_URL",
+    "alchemyKeyEnvVar": "ALCHEMY_API_KEY",
+    "alchemyUrlTemplate": "https://eth-sepolia.g.alchemy.com/v2/{key}",
+    "fallbackUrls": [
+      "https://ethereum-sepolia-rpc.publicnode.com",
+      "https://rpc.sepolia.org"
+    ]
+  },
+  "bundler": {
+    "apiKeyEnvVar": "PIMLICO_API_KEY",
+    "urlTemplate": "https://api.pimlico.io/v2/11155111/rpc?apikey={key}",
+    "$comment": "Pimlico serves bundler and paymaster on the same endpoint."
+  },
+  "railgun": {
+    "proxyContract": "0xeCFCf3b4eC647c4Ca6D49108b311b7a7C9543fea",
+    "relayAdaptContract": "0x7e3d929EbD5bDC84d02Bd3205c777578f33A214D",
+    "deploymentBlock": 5784866,
+    "$comment": "From @railgun-community/shared-models NETWORK_CONFIG.EthereumSepolia. Recorded here so the sidecar can pin a scan start block instead of rescanning from genesis."
+  },
+  "uniswapV3": {
+    "swapRouter02": "0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E",
+    "quoterV2": "0xEd1f6473345F45b75F8179591dd5bA1888cf2FB3",
+    "factory": "0x0227628f3F023bb0B980b67D528571c95c6DaC1c",
+    "defaultFeeTier": 500,
+    "$comment": "Cookbook ships no working Sepolia swap adapter (its 0x v1 adapter targets the retired sepolia.api.0x.org, and its UniV2 adapters throw for Sepolia), so the sidecar builds a custom Cookbook Step against Uniswap V3, which does have real Sepolia liquidity in the 0.05% WETH/USDC pool."
+  }
 }

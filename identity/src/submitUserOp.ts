@@ -1,93 +1,161 @@
-import { getAccount } from "./createAccount";
-import { Hex, encodeFunctionData } from "viem";
+/**
+ * Submit an attested rebalance as an ERC-4337 UserOperation.
+ *
+ * Signs with the session key only. AEGIS_OWNER_PRIVATE_KEY is never read on
+ * this path — see sessionKey.ts for why that required the approve/execute
+ * split.
+ */
+
+import { Hex } from "viem";
+
+import { explorerTxUrl } from "./config";
+import { buildKernelClient } from "./clients";
+import { loadSessionKeyAccount } from "./sessionKey";
+import {
+  encodeRebalance,
+  extractRebalanceEvents,
+  isDecisionExecuted,
+  readVaultState,
+  vaultAddress,
+} from "./vault";
+
+export interface SubmitResult {
+  userOpHash: Hex;
+  txHash: Hex;
+  blockNumber: string;
+  gasUsed: string;
+  smartAccount: string;
+  decisionHash: Hex;
+  sequence: string;
+  timestamp: string;
+  explorerUrl: string;
+}
+
+function normaliseHex(value: string, name: string, byteLength?: number): Hex {
+  const hex = (value.startsWith("0x") ? value : `0x${value}`) as Hex;
+  if (!/^0x[0-9a-fA-F]*$/.test(hex)) {
+    throw new Error(`${name} is not hex: ${value}`);
+  }
+  if (byteLength !== undefined && hex.length !== 2 + byteLength * 2) {
+    throw new Error(`${name} must be ${byteLength} bytes, got ${(hex.length - 2) / 2}`);
+  }
+  return hex;
+}
 
 /**
- * Submits a UserOperation to the bundler using the owner's Kernel smart account.
- * 
- * In production, this should use a session-key-scoped permission validator so
- * the owner key never touches the hot path. For now we use the owner ECDSA
- * validator directly because the ZeroDev permissions SDK has compatibility
- * issues with the installed version.
+ * Submit `AegisVault.rebalance(decisionHash, attestationProof)`.
+ *
+ * Pre-flight checks run before anything is signed, because a UserOperation that
+ * reverts on-chain still costs the paymaster gas and produces a far less
+ * legible error than a local check does.
  */
-export async function submitUserOp(
-  targetAddress: Hex,
-  calldata: Hex,
-  value: bigint = 0n,
-) {
-  const { account, kernelClient } = await getAccount();
+export async function submitRebalance(
+  decisionHashRaw: string,
+  attestationProofRaw: string,
+): Promise<SubmitResult> {
+  const decisionHash = normaliseHex(decisionHashRaw, "decisionHash", 32);
+  const attestationProof = normaliseHex(attestationProofRaw, "attestationProof");
 
-  console.log(`[identity] Kernel Smart Account: ${account.address}`);
-  console.log(`[identity] Submitting UserOp to target: ${targetAddress}`);
+  const vault = vaultAddress();
+  const { account, stored } = await loadSessionKeyAccount();
 
-  // Use sendTransaction — the kernelClient handles UserOp encoding internally
-  const txHash = await kernelClient.sendTransaction({
-    to: targetAddress,
-    data: calldata,
-    value,
+  // Pre-flight 1: is the vault bound to this account at all?
+  const state = await readVaultState();
+  if (!state.sessionKeySet) {
+    throw new Error(
+      `Vault ${vault} has no session key bound. Run: npm run session-key:bind`,
+    );
+  }
+  if (state.sessionKey.toLowerCase() !== account.address.toLowerCase()) {
+    throw new Error(
+      `Vault is bound to ${state.sessionKey}, but this approval yields account ` +
+        `${account.address}. Every rebalance would revert with NotSessionKey(). ` +
+        `The vault's setter is one-shot, so this needs a redeploy.`,
+    );
+  }
+
+  // Pre-flight 2: the on-chain replay guard.
+  if (await isDecisionExecuted(decisionHash)) {
+    throw new Error(
+      `Decision ${decisionHash} has already been executed on this vault. ` +
+        `Each decision may be recorded exactly once.`,
+    );
+  }
+
+  const kernelClient = await buildKernelClient(account);
+  const callData = encodeRebalance(decisionHash, attestationProof);
+
+  console.error(`[identity] account      ${account.address}`);
+  console.error(`[identity] vault        ${vault}`);
+  console.error(`[identity] decisionHash ${decisionHash}`);
+  console.error(`[identity] proof        ${(attestationProof.length - 2) / 2} bytes`);
+
+  const userOpHash = await kernelClient.sendUserOperation({
+    callData: await account.encodeCalls([{ to: vault, value: 0n, data: callData }]),
+  });
+  console.error(`[identity] userOpHash   ${userOpHash}`);
+
+  const receipt = await kernelClient.waitForUserOperationReceipt({
+    hash: userOpHash,
+    timeout: 180_000,
   });
 
-  console.log(`[identity] Transaction Mined! Tx Hash: ${txHash}`);
-  return txHash;
+  if (!receipt.success) {
+    throw new Error(
+      `UserOperation ${userOpHash} reverted on-chain (tx ${receipt.receipt.transactionHash}). ` +
+        `Reasons in order of likelihood: attestation expired, measurement mismatch between ` +
+        `the enclave build and AttestationVerifier.expectedMeasurement, or the daily rate ` +
+        `limit already consumed.`,
+    );
+  }
+
+  // Confirm the event rather than inferring success from the receipt status:
+  // a transaction can succeed while the log we care about is absent.
+  const events = extractRebalanceEvents(receipt.receipt.logs);
+  const event = events.find((e) => e.decisionHash.toLowerCase() === decisionHash.toLowerCase());
+  if (!event) {
+    throw new Error(
+      `Transaction ${receipt.receipt.transactionHash} succeeded but emitted no ` +
+        `RebalanceExecuted for ${decisionHash}.`,
+    );
+  }
+
+  const txHash = receipt.receipt.transactionHash as Hex;
+  console.error(`[identity] Tx Hash:     ${txHash}`);
+  console.error(`[identity] sequence     ${event.sequence}`);
+
+  return {
+    userOpHash: userOpHash as Hex,
+    txHash,
+    blockNumber: receipt.receipt.blockNumber.toString(),
+    gasUsed: receipt.receipt.gasUsed.toString(),
+    smartAccount: stored.smartAccount,
+    decisionHash,
+    sequence: event.sequence.toString(),
+    timestamp: event.timestamp.toString(),
+    explorerUrl: explorerTxUrl(txHash),
+  };
 }
 
-// ---------------------------------------------------------------------------
-// Hex normalisation helper — adds 0x prefix if missing
-// ---------------------------------------------------------------------------
-function ensureHex(value: string | undefined): Hex {
-  if (!value) throw new Error("Value is undefined");
-  return (value.startsWith("0x") ? value : `0x${value}`) as Hex;
-}
-
-// ---------------------------------------------------------------------------
-// CLI execution — called by run_full_pipeline.sh via `npm run start:submit`
-// ---------------------------------------------------------------------------
 if (require.main === module) {
-  // All values come from environment variables injected by the pipeline script
-  const rawTarget = process.env.AEGIS_VAULT_ADDRESS;
-  const rawDecisionHash = process.env.DECISION_HASH;
-  const rawTdxQuote = process.env.TDX_QUOTE;
+  const decisionHash = process.env.DECISION_HASH ?? process.argv[2];
+  const proof = process.env.ATTESTATION_PROOF ?? process.argv[3];
 
-  if (!rawTarget || !rawDecisionHash || !rawTdxQuote) {
+  if (!decisionHash || !proof) {
     console.error(
-      "[identity] Missing env vars. Required: AEGIS_VAULT_ADDRESS, DECISION_HASH, TDX_QUOTE",
+      "Usage: submitUserOp <decisionHash> <attestationProof>\n" +
+        "   or: DECISION_HASH=0x.. ATTESTATION_PROOF=0x.. npm run submit",
     );
     process.exit(1);
   }
 
-  const target = ensureHex(rawTarget);
-  const decisionHash = ensureHex(rawDecisionHash);
-  const tdxQuote = ensureHex(rawTdxQuote);
-
-  console.log(`[identity] target=${target}`);
-  console.log(`[identity] decisionHash=${decisionHash}`);
-  console.log(`[identity] tdxQuote length=${tdxQuote.length} chars`);
-
-  // Encode the calldata for AegisVault.rebalance(bytes32, bytes)
-  const calldata = encodeFunctionData({
-    abi: [
-      {
-        type: "function",
-        name: "rebalance",
-        inputs: [
-          { name: "decisionHash", type: "bytes32" },
-          { name: "proof", type: "bytes" },
-        ],
-        outputs: [],
-        stateMutability: "nonpayable",
-      },
-    ],
-    functionName: "rebalance",
-    args: [decisionHash, tdxQuote],
-  });
-
-  submitUserOp(target, calldata)
-    .then((txHash) => {
-      console.log(`Transaction Mined! Tx Hash: ${txHash}`);
+  submitRebalance(decisionHash, proof)
+    .then((result) => {
+      console.log(JSON.stringify(result, null, 2));
       process.exit(0);
     })
-    .catch((err) => {
-      console.error("[identity] Fatal error:", err);
-      if (err.details) console.error("[identity] Details:", err.details);
+    .catch((error) => {
+      console.error("[identity] submit failed:", error.message);
       process.exit(1);
     });
 }
