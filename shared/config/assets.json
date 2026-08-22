@@ -1,0 +1,20 @@
+{
+  "assets": [
+    {
+      "symbol": "WETH",
+      "name": "Wrapped Ether",
+      "address": "0xfff9976782d46CC05630D1f6eBAb18b2324d6B14",
+      "decimals": 18,
+      "coingeckoId": "weth",
+      "network": "sepolia"
+    },
+    {
+      "symbol": "USDC",
+      "name": "USD Coin",
+      "address": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
+      "decimals": 6,
+      "coingeckoId": "usd-coin",
+      "network": "sepolia"
+    }
+  ]
+}

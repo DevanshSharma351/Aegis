@@ -1,0 +1,9 @@
+{
+  "network": "sepolia",
+  "chainId": 11155111,
+  "rpcUrl": "${ALCHEMY_API_KEY:+https://eth-sepolia.g.alchemy.com/v2/${ALCHEMY_API_KEY}}",
+  "rpcUrlFallback": "https://rpc.sepolia.org",
+  "blockExplorer": "https://sepolia.etherscan.io",
+  "bundlerUrl": "${PIMLICO_API_KEY:+https://api.pimlico.io/v2/sepolia/rpc?apikey=${PIMLICO_API_KEY}}",
+  "note": "All values containing ${} are environment variable references — resolve at runtime, never commit real keys."
+}

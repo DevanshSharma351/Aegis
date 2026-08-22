@@ -1,0 +1,10 @@
+.env
+.env.example
+.pytest_cache
+Microsoft
+dstack-sim
+prompt_utf8.txt
+prompt.txt
+node_modules
+__pycache__
+

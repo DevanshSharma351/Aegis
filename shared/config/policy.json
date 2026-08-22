@@ -1,0 +1,21 @@
+{
+  "sessionKeyPolicy": {
+    "maxExecutionsPerDay": 1,
+    "valueLimit": "0",
+    "withdrawalPermissions": "NONE",
+    "allowedSelectors": [
+      {
+        "selector": "0x7f1a1e28",
+        "name": "rebalance(bytes32,bytes)",
+        "note": "The only function the session key is permitted to call on AegisVault"
+      }
+    ],
+    "allowedTargets": [
+      {
+        "name": "AegisVault",
+        "address": "PLACEHOLDER — populated after Prompt 2 deployment, see shared/config/deployed.json"
+      }
+    ],
+    "rationale": "Zero native-value transfer, single daily execution, and selector-scoped targeting ensure the session key can only log a rebalance decision hash — never move funds directly."
+  }
+}

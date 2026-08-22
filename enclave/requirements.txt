@@ -1,0 +1,23 @@
+# Enclave — Python dependencies
+# FastAPI + ASGI server
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+
+# Data / Quant
+pandas==2.2.3
+numpy==2.2.1
+requests==2.32.3
+
+# Ollama client (local SLM inference)
+ollama==0.4.7
+
+# dstack TEE attestation SDK
+dstack-sdk==0.1.6
+
+# Testing
+pytest==8.3.4
+pytest-asyncio==0.25.0
+httpx==0.28.1
+
+# Schema validation
+pydantic==2.10.4

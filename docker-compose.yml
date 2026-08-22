@@ -1,0 +1,60 @@
+version: '3.8'
+
+services:
+  enclave:
+    build:
+      context: ./enclave
+    ports:
+      - "8000:8000"
+    environment:
+      - OLLAMA_HOST=http://localhost:11434
+      - COINGECKO_API_KEY=${COINGECKO_API_KEY}
+    networks:
+      - internal_net
+      - default
+    volumes:
+      - ./shared:/app/shared
+      - /tmp/dstack_run2/tappd.sock:/var/run/tappd.sock
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  railgun-sidecar:
+    build:
+      context: ./railgun-sidecar
+    expose:
+      - "8080"
+    environment:
+      - RAILGUN_WALLET_MNEMONIC=${RAILGUN_WALLET_MNEMONIC}
+      - RAILGUN_ENGINE_DB_PATH=/app/railgun-db
+    networks:
+      - internal_net
+    volumes:
+      - ./shared:/app/shared
+
+  identity:
+    build:
+      context: ./identity
+    environment:
+      - PIMLICO_API_KEY=${PIMLICO_API_KEY}
+      - ZERODEV_PROJECT_ID=${ZERODEV_PROJECT_ID}
+      - ALCHEMY_API_KEY=${ALCHEMY_API_KEY}
+      - AEGIS_OWNER_PRIVATE_KEY=${AEGIS_OWNER_PRIVATE_KEY}
+      - SESSION_KEY_PRIVATE_KEY=${SESSION_KEY_PRIVATE_KEY}
+      - AEGIS_VAULT_ADDRESS=${AEGIS_VAULT_ADDRESS}
+      - ATTESTATION_VERIFIER_ADDRESS=${ATTESTATION_VERIFIER_ADDRESS}
+      - NODE_OPTIONS=--dns-result-order=ipv4first
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    network_mode: "host"
+    volumes:
+      - ./shared:/app/shared
+    # Do not start automatically on `docker-compose up` unless explicitly targeted
+    profiles:
+      - init
+
+networks:
+  internal_net:
+    internal: true
