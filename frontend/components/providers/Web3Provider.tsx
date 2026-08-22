@@ -8,7 +8,6 @@ import {
   RainbowKitProvider,
 } from '@rainbow-me/rainbowkit';
 import {
-  metaMaskWallet,
   coinbaseWallet,
   injectedWallet,
 } from '@rainbow-me/rainbowkit/wallets';
@@ -27,13 +26,13 @@ import {
 
 const config = getDefaultConfig({
   appName: 'Aegis',
-  projectId: '3a8170812b534d0f3e1a8a0f8b8e0b68', // Keep placeholder, it won't be used
+  projectId: 'fe3a58f3a1bab358ae25e918ce3aa2f6',
   chains: [mainnet, polygon, optimism, arbitrum, base],
   ssr: true,
   wallets: [
     {
       groupName: 'Recommended',
-      wallets: [metaMaskWallet, coinbaseWallet, injectedWallet],
+      wallets: [injectedWallet, coinbaseWallet],
     },
   ],
 });

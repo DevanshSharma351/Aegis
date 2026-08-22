@@ -78,7 +78,7 @@ export function HeroCTA({ isConnected, onClick }: { isConnected: boolean; onClic
               >
                 <div className="inline-flex items-center gap-2 text-sm font-medium text-white font-mono uppercase tracking-wider">
                   {isConnected ? (
-                    <>View Dashboard <ArrowRight className="w-4 h-4" /></>
+                    <>Dashboard <ArrowRight className="w-4 h-4" /></>
                   ) : (
                     <>Connect <Wallet className="w-4 h-4" /></>
                   )}
