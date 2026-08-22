@@ -3,8 +3,10 @@
 An autonomous rebalancing agent that reasons inside a TEE, proves what it
 decided on-chain, and executes through Railgun's shielded pool.
 
-Backend only. The frontend lives on a separate branch and reads
-`shared/config/deployed.json` plus `shared/abi/`.
+The frontend lives in `frontend/` and reads live Sepolia state — see
+[frontend/README.md](frontend/README.md). It is fed by
+`scripts/sync_frontend_config.py`, which generates a typed module from
+`shared/config` and `shared/abi`.
 
 ---
 
@@ -174,7 +176,11 @@ These are real and deliberately not papered over:
    is documented above and in `AttestationVerifier.sol`.
 2. **Railgun spending needs a POI aggregator.** Sepolia is POI-required.
    Shielding and balance scans work without one; unshield/swap/reshield cannot
-   generate a proof. See `railgun-sidecar/README.md`.
+   generate a proof. Running our own node was investigated and rejected —
+   `railgun-sidecar/POI.md` has the full analysis, but the short reason is that a
+   POI list is keyed by its provider's public key, so a node we run cannot serve
+   the list the SDK requires, and substituting our own would make the proof
+   attest nothing.
 3. **The session key does not yet authorise Railgun.** `getSubmitter()` is the
    seam; leaving it unswitched is a deliberate scope decision, explained there.
 4. **The session key is a plaintext env var.** It should be TEE-derived via
@@ -193,6 +199,7 @@ shared/
                derivation. Shared verbatim by enclave and oracle so the two
                cannot drift.
 contracts/     AegisVault, AttestationVerifier, Foundry tests
+frontend/      Next.js app; reads chain state directly, no backend
 enclave/       FastAPI: data -> signals -> SLM -> TDX quote
 oracle/        quote verification + attestation signing
 identity/      ERC-4337 account, session key, submission

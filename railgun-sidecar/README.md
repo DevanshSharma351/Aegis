@@ -48,8 +48,14 @@ opaque request error.
 
 To enable spending, set `RAILGUN_POI_NODE_URL` to a reachable POI aggregator.
 At the time of writing, no public Sepolia aggregator was reachable from this
-environment; the operator has to supply one, or run
-`startRailgunEngineForPOINode` themselves.
+environment.
+
+Running our own node was investigated in depth — see [POI.md](POI.md). Short
+version: the node supports Sepolia and is not hard to stand up, but a list's key
+*is* its provider's public key, so a node we run cannot serve the Chainalysis
+OFAC list the SDK requires. The only way through is to substitute our own
+allow-everything list, which keeps the ZK proof real but makes what it attests
+vacuous. Not taken.
 
 ## Why the swap is hand-built
 
