@@ -7,6 +7,11 @@ import {
   getDefaultConfig,
   RainbowKitProvider,
 } from '@rainbow-me/rainbowkit';
+import {
+  metaMaskWallet,
+  coinbaseWallet,
+  injectedWallet,
+} from '@rainbow-me/rainbowkit/wallets';
 import { WagmiProvider } from 'wagmi';
 import {
   mainnet,
@@ -22,9 +27,15 @@ import {
 
 const config = getDefaultConfig({
   appName: 'Aegis',
-  projectId: '3a8170812b534d0f3e1a8a0f8b8e0b68', // Valid 32-char hex for WalletConnect
+  projectId: '3a8170812b534d0f3e1a8a0f8b8e0b68', // Keep placeholder, it won't be used
   chains: [mainnet, polygon, optimism, arbitrum, base],
-  ssr: true, // If your dApp uses server side rendering (SSR)
+  ssr: true,
+  wallets: [
+    {
+      groupName: 'Recommended',
+      wallets: [metaMaskWallet, coinbaseWallet, injectedWallet],
+    },
+  ],
 });
 
 const queryClient = new QueryClient();
