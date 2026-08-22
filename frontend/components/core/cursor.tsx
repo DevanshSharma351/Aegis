@@ -129,8 +129,9 @@ export function Cursor({
   return createPortal(
     <motion.div
       ref={cursorRef}
-      className={cn('pointer-events-none fixed left-0 top-0 z-[9999]', className)}
+      className={cn('pointer-events-none fixed left-0 top-0', className)}
       style={{
+        zIndex: 2147483647,
         x: cursorXSpring,
         y: cursorYSpring,
         translateX: '-50%',

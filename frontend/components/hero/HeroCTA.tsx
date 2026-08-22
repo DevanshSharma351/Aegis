@@ -1,21 +1,35 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useRef, useState, useEffect } from 'react';
 import { Cursor } from '@/components/core/cursor';
 import { AnimatePresence, motion } from 'motion/react';
 import { ArrowRight, Wallet } from 'lucide-react';
+import { useConnectModal, useAccountModal, useChainModal } from '@rainbow-me/rainbowkit';
 
 export function HeroCTA({ isConnected, onClick }: { isConnected: boolean; onClick: () => void }) {
   const [isHovering, setIsHovering] = useState(false);
   const [isClicked, setIsClicked] = useState(false);
   const targetRef = useRef<HTMLDivElement>(null);
 
+  const { connectModalOpen } = useConnectModal();
+  const { accountModalOpen } = useAccountModal();
+  const { chainModalOpen } = useChainModal();
+  const isModalOpen = connectModalOpen || accountModalOpen || chainModalOpen;
+
+  useEffect(() => {
+    if (isModalOpen) {
+      setIsHovering(false);
+    }
+  }, [isModalOpen]);
+
   const handlePositionChange = (x: number, y: number) => {
-    if (targetRef.current && !isClicked) {
+    if (targetRef.current && !isClicked && !isModalOpen) {
       const rect = targetRef.current.getBoundingClientRect();
       const isInside =
         x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
       setIsHovering(isInside);
+    } else if (isModalOpen) {
+      setIsHovering(false);
     }
   };
 
