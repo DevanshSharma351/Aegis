@@ -58,6 +58,15 @@ export function RunAegis({ isConnected }: { isConnected: boolean }) {
   const [depositSymbol, setDepositSymbol] = React.useState('WETH');
   // Decimals come from the same balance record the symbol did, so an 18-decimal
   // and a 6-decimal asset are never rendered with the same divisor.
+  // Decimals for whichever pair the agent actually traded. Looked up from the
+  // reported balances so an 18-decimal and a 6-decimal asset are never divided
+  // by the same power of ten.
+  const decimalsFor = (symbol?: string) =>
+    balances.find((b) => b.symbol === symbol)?.decimals ?? 18;
+  const swapResult = job?.result?.swap;
+  const sellDecimals = decimalsFor(swapResult?.sellSymbol);
+  const buyDecimals = decimalsFor(swapResult?.buySymbol);
+
   const depositDecimals =
     balances.find((b) => b.symbol === depositSymbol)?.decimals ?? 18;
   const [withdrawAmount, setWithdrawAmount] = React.useState('');
@@ -560,14 +569,26 @@ export function RunAegis({ isConnected }: { isConnected: boolean }) {
                   <p className="text-[10px] text-muted uppercase tracking-wider mb-2">
                     Railgun private swap
                   </p>
-                  <KV k="Sold" v={`${formatUnits(swap.sellAmount, 18)} WETH`} />
-                  <KV k="Unshield fee" v={formatUnits(swap.unshieldFee, 18)} />
-                  <KV k="Received (quoted)" v={`${formatUnits(swap.quotedBuyAmount, 6)} USDC`} />
+                  <KV
+                    k="Sold"
+                    v={`${formatUnits(swap.sellAmount, sellDecimals)} ${swap.sellSymbol}`}
+                  />
+                  <KV
+                    k="Unshield fee"
+                    v={`${formatUnits(swap.unshieldFee, sellDecimals)} ${swap.sellSymbol}`}
+                  />
+                  <KV
+                    k="Received (quoted)"
+                    v={`${formatUnits(swap.quotedBuyAmount, buyDecimals)} ${swap.buySymbol}`}
+                  />
                   <KV
                     k="Received (actual)"
-                    v={`${formatUnits(swap.execution.actualBuyAmount, 6)} USDC`}
+                    v={`${formatUnits(swap.execution.actualBuyAmount, buyDecimals)} ${swap.buySymbol}`}
                   />
-                  <KV k="Slippage floor" v={`${formatUnits(swap.minimumBuyAmount, 6)} USDC`} />
+                  <KV
+                    k="Slippage floor"
+                    v={`${formatUnits(swap.minimumBuyAmount, buyDecimals)} ${swap.buySymbol}`}
+                  />
                   <KV k="Proof time" v={`${(swap.proofDurationMs / 1000).toFixed(1)}s`} />
                   <KV k="Gas used" v={swap.gasUsed} />
                   <a
@@ -584,7 +605,8 @@ export function RunAegis({ isConnected }: { isConnected: boolean }) {
                       mempoolExposed={swap.submission.mempoolExposed}
                       route={swap.submission.route}
                       execution={swap.execution}
-                      minimumBuyAmount={`${formatUnits(swap.minimumBuyAmount, 6)}`}
+                      minimumBuyAmount={`${formatUnits(swap.minimumBuyAmount, buyDecimals)}`}
+                      buySymbol={swap.buySymbol}
                     />
                   </div>
                 </>

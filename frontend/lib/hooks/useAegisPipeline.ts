@@ -60,6 +60,11 @@ export interface PipelineJob {
       txHash: string;
       blockNumber: number;
       gasUsed: string;
+      // The agent chooses its own pair, so the symbols must come from the
+      // result. Assuming WETH/USDC printed a USDC sale as "0.0000000000088 WETH"
+      // and a WETH purchase as "391561069 USDC" -- both off by 1e12.
+      sellSymbol: string;
+      buySymbol: string;
       sellAmount: string;
       netSellAmount: string;
       unshieldFee: string;
