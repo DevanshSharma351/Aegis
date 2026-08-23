@@ -64,17 +64,49 @@ export function Cursor({
     }
   }, []);
 
+  /**
+   * Hide the native pointer only while the stand-in is actually on screen.
+   *
+   * The rule used to be injected once on mount and left there for the life of
+   * the component, which meant the native cursor was hidden inside the region
+   * whether or not anything replaced it. Every way the blob could fail to draw
+   * -- not yet mounted, reduced motion, the pointer already inside the region
+   * on load so no mousemove had fired yet -- left that area with no cursor at
+   * all, which reads as the page being broken.
+   *
+   * Tying the rule to `isVisible` inverts the failure: if the replacement is
+   * not showing, the real pointer is. There is no state where neither is.
+   */
   useEffect(() => {
-    if (!attachToParent) {
-      const style = document.createElement('style');
-      style.id = 'global-cursor-none';
-      // Scoped to the decorated region. Unscoped, this hid the pointer on the
-      // whole page -- including the nav and every button below the fold.
-      style.innerHTML = hideNativeCursorWithin
-        ? `${hideNativeCursorWithin}, ${hideNativeCursorWithin} * { cursor: none !important; }`
-        : '';
+    if (attachToParent || !hideNativeCursorWithin) return;
+
+    // Someone who has asked for reduced motion should not have their pointer
+    // swapped for an animated one at all.
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+
+    const id = 'global-cursor-none';
+    let style = document.getElementById(id) as HTMLStyleElement | null;
+    if (!style) {
+      style = document.createElement('style');
+      style.id = id;
       document.head.appendChild(style);
-    } else {
+    }
+
+    // Scoped to the decorated region. Unscoped, this hid the pointer on the
+    // whole page -- including the nav and every button below the fold.
+    style.textContent = isVisible
+      ? `${hideNativeCursorWithin}, ${hideNativeCursorWithin} * { cursor: none !important; }`
+      : '';
+
+    // Leaving the rule behind on unmount would hide the pointer over a region
+    // whose custom cursor no longer exists.
+    return () => {
+      document.getElementById(id)?.remove();
+    };
+  }, [isVisible, attachToParent, hideNativeCursorWithin]);
+
+  useEffect(() => {
+    if (attachToParent) {
       document.body.style.cursor = 'auto';
     }
 
@@ -103,15 +135,23 @@ export function Cursor({
       onPositionChange?.(cursorX.get(), cursorY.get());
     };
 
+    // Leaving the window fires no mousemove, so without this the last known
+    // position keeps the stand-in "inside" the region and the native pointer
+    // stays hidden after the cursor has gone somewhere else entirely.
+    const handleLeave = () => {
+      if (!attachToParent && hideNativeCursorWithin) setIsVisible(false);
+    };
+
     document.addEventListener('mousemove', updatePosition);
+    document.addEventListener('mouseleave', handleLeave);
+    window.addEventListener('blur', handleLeave);
     window.addEventListener('scroll', handleScroll, { passive: true });
 
     return () => {
       document.removeEventListener('mousemove', updatePosition);
+      document.removeEventListener('mouseleave', handleLeave);
+      window.removeEventListener('blur', handleLeave);
       window.removeEventListener('scroll', handleScroll);
-      if (!attachToParent) {
-        document.getElementById('global-cursor-none')?.remove();
-      }
     };
   }, [cursorX, cursorY, onPositionChange, attachToParent, hideNativeCursorWithin]);
 
