@@ -9,6 +9,7 @@ import { useConnectModal, useAccountModal, useChainModal } from '@rainbow-me/rai
 export function HeroCTA({ isConnected, onClick }: { isConnected: boolean; onClick: () => void }) {
   const [isHovering, setIsHovering] = useState(false);
   const [isClicked, setIsClicked] = useState(false);
+  const [overInteractive, setOverInteractive] = useState(false);
   const targetRef = useRef<HTMLDivElement>(null);
 
   const { connectModalOpen } = useConnectModal();
@@ -31,6 +32,19 @@ export function HeroCTA({ isConnected, onClick }: { isConnected: boolean; onClic
     } else if (isModalOpen) {
       setIsHovering(false);
     }
+
+    // A cursor that never changes over a button is worse than the native one it
+    // replaced: the pointer shape is how a page signals what can be clicked, and
+    // hiding it without restoring that signal costs the user real information.
+    // The stand-in is pointer-events-none, so it never occludes what it is over.
+    const under = document.elementFromPoint(x, y);
+    setOverInteractive(
+      Boolean(
+        under?.closest(
+          'a, button, [role="button"], input, select, textarea, label, summary',
+        ),
+      ),
+    );
   };
 
   const handleClick = () => {
@@ -45,9 +59,9 @@ export function HeroCTA({ isConnected, onClick }: { isConnected: boolean; onClic
     <div className="relative flex h-2 w-full items-center justify-center anim" style={{ '--d': '0.4s' } as React.CSSProperties}>
       <Cursor
         attachToParent={false}
-        // Without this the component hides the native pointer document-wide,
-        // which made the nav and every button below the hero read as dead.
-        hideNativeCursorWithin=".hero"
+        // No region: the custom cursor replaces the native one across the whole
+        // site. Safe only because Cursor ties the hiding rule to whether the
+        // stand-in is actually drawn.
         variants={{
           initial: { scale: 0.3, opacity: 0 },
           animate: { scale: 1, opacity: 1 },
@@ -64,12 +78,31 @@ export function HeroCTA({ isConnected, onClick }: { isConnected: boolean; onClic
         }}
         onPositionChange={handlePositionChange}
       >
+        {/*
+          Three states, because this is now the only cursor on the site:
+            idle        a small solid dot, legible on any background
+            interactive a ring that opens around what it is over
+            hero CTA    a labelled pill
+          The idle dot is opaque rather than the old 20% white -- at 16px and
+          that opacity it was effectively invisible, which is why replacing the
+          native pointer everywhere previously read as the cursor vanishing.
+        */}
         <motion.div
           animate={{
-            width: isHovering ? (isConnected ? 180 : 160) : 16,
-            height: isHovering ? 48 : 16,
+            width: isHovering ? (isConnected ? 180 : 160) : overInteractive ? 38 : 12,
+            height: isHovering ? 48 : overInteractive ? 38 : 12,
+            backgroundColor: isHovering
+              ? 'rgba(255,255,255,0.20)'
+              : overInteractive
+                ? 'rgba(255,255,255,0.10)'
+                : 'rgba(255,255,255,0.92)',
+            borderColor: overInteractive || isHovering
+              ? 'rgba(255,255,255,0.55)'
+              : 'rgba(0,0,0,0.25)',
           }}
-          className="flex items-center justify-center rounded-[24px] bg-white/20 backdrop-blur-md border border-white/10 shadow-[0_0_20px_rgba(255,255,255,0.1)] pointer-events-none"
+          transition={{ type: 'spring', stiffness: 500, damping: 34, mass: 0.4 }}
+          className="flex items-center justify-center rounded-full border backdrop-blur-md shadow-[0_0_12px_rgba(0,0,0,0.35)] pointer-events-none"
+          style={{ borderRadius: isHovering ? 24 : 999 }}
         >
           <AnimatePresence>
             {isHovering && (

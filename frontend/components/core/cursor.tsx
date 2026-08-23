@@ -19,13 +19,13 @@ export type CursorProps = {
   springConfig?: SpringOptions;
   attachToParent?: boolean;
   /**
-   * CSS selector for the region this custom cursor replaces the native one in.
+   * Region the custom cursor replaces the native one in. Omit for the whole
+   * document.
    *
-   * Without it, a detached cursor hid the native pointer across the entire
-   * document via `* { cursor: none !important }`, which is almost never what is
-   * wanted: every button, link and input outside the decorated region also lost
-   * its pointer, so the page read as unclickable even though the handlers were
-   * firing normally.
+   * Going document-wide is only safe because the rule is tied to whether the
+   * replacement is actually on screen (see below). An unconditional
+   * `* { cursor: none }` is what made every button on the page read as dead:
+   * the pointer was hidden everywhere while the stand-in was drawn nowhere.
    */
   hideNativeCursorWithin?: string;
   transition?: Transition;
@@ -51,7 +51,9 @@ export function Cursor({
   const cursorY = useMotionValue(0);
   const cursorRef = useRef<HTMLDivElement>(null);
   const [isVisible, setIsVisible] = useState(
-    !attachToParent && !hideNativeCursorWithin,
+    // Always starts hidden: the native pointer must not be hidden until the
+    // replacement has actually been placed, which needs one mousemove.
+    false,
   );
 
   const [mounted, setMounted] = useState(false);
@@ -78,11 +80,13 @@ export function Cursor({
    * not showing, the real pointer is. There is no state where neither is.
    */
   useEffect(() => {
-    if (attachToParent || !hideNativeCursorWithin) return;
+    if (attachToParent) return;
 
     // Someone who has asked for reduced motion should not have their pointer
-    // swapped for an animated one at all.
+    // swapped for an animated one at all. Neither should a touch device, where
+    // there is no pointer to replace and hiding it achieves nothing.
     if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+    if (!window.matchMedia?.('(pointer: fine)').matches) return;
 
     const id = 'global-cursor-none';
     let style = document.getElementById(id) as HTMLStyleElement | null;
@@ -92,11 +96,11 @@ export function Cursor({
       document.head.appendChild(style);
     }
 
-    // Scoped to the decorated region. Unscoped, this hid the pointer on the
-    // whole page -- including the nav and every button below the fold.
-    style.textContent = isVisible
-      ? `${hideNativeCursorWithin}, ${hideNativeCursorWithin} * { cursor: none !important; }`
-      : '';
+    const scope = hideNativeCursorWithin
+      ? `${hideNativeCursorWithin}, ${hideNativeCursorWithin} *`
+      : '*';
+
+    style.textContent = isVisible ? `${scope} { cursor: none !important; }` : '';
 
     // Leaving the rule behind on unmount would hide the pointer over a region
     // whose custom cursor no longer exists.
@@ -115,19 +119,24 @@ export function Cursor({
       cursorY.set(e.clientY);
       onPositionChange?.(e.clientX, e.clientY);
 
-      // The blob stands in for the pointer, so it must only be drawn where the
-      // pointer is actually hidden. Otherwise both are visible at once.
-      if (!attachToParent && hideNativeCursorWithin) {
-        const region = document.querySelector(hideNativeCursorWithin);
-        if (region) {
-          const r = region.getBoundingClientRect();
-          setIsVisible(
-            e.clientX >= r.left &&
-              e.clientX <= r.right &&
-              e.clientY >= r.top &&
-              e.clientY <= r.bottom,
-          );
-        }
+      // The blob stands in for the pointer, so it is drawn exactly where the
+      // pointer is hidden -- never both, never neither.
+      if (attachToParent) return;
+
+      if (!hideNativeCursorWithin) {
+        setIsVisible(true);
+        return;
+      }
+
+      const region = document.querySelector(hideNativeCursorWithin);
+      if (region) {
+        const r = region.getBoundingClientRect();
+        setIsVisible(
+          e.clientX >= r.left &&
+            e.clientX <= r.right &&
+            e.clientY >= r.top &&
+            e.clientY <= r.bottom,
+        );
       }
     };
 
@@ -139,7 +148,7 @@ export function Cursor({
     // position keeps the stand-in "inside" the region and the native pointer
     // stays hidden after the cursor has gone somewhere else entirely.
     const handleLeave = () => {
-      if (!attachToParent && hideNativeCursorWithin) setIsVisible(false);
+      if (!attachToParent) setIsVisible(false);
     };
 
     document.addEventListener('mousemove', updatePosition);
