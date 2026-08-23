@@ -94,6 +94,7 @@ export function PrivateSwap() {
 
         <StatusBadge
           ok={isPrivate}
+          tone={isPrivate ? 'ok' : 'info'}
           icon={isPrivate ? <EyeOff className="w-5 h-5" /> : <Lock className="w-5 h-5" />}
           title={isPrivate ? 'Submission: PRIVATE' : 'Submission: PUBLIC'}
           detail={
@@ -201,9 +202,9 @@ export function PrivateSwap() {
               </p>
             )}
             {status.canSwap && spendable === 0n && !balancesLoading && (
-              <p className="text-[11px] text-amber-400/80 font-mono leading-relaxed">
-                No POI-validated WETH to spend. A freshly shielded note becomes spendable once the
-                aggregator validates it.
+              <p className="text-[11px] text-info/80 font-mono leading-relaxed">
+                No POI-validated WETH to spend yet. A freshly shielded note becomes spendable once
+                the aggregator validates it — usually a couple of minutes.
               </p>
             )}
           </div>
@@ -296,6 +297,7 @@ function Row({ label, value }: { label: string; value: string }) {
 
 function StatusBadge({
   ok,
+  tone: toneProp,
   icon,
   title,
   detail,
@@ -306,20 +308,25 @@ function StatusBadge({
   title: string;
   detail: string;
   mono?: string;
+  tone?: 'ok' | 'info' | 'warn';
 }) {
+  // Three tones, not two. `ok=false` used to mean amber regardless of why, so a
+  // deliberate and correct choice -- a public route on a chain with no builders
+  // -- looked identical to something being broken. `tone="info"` says "this is
+  // the accurate state, and it is fine"; amber is kept for actual faults.
+  const tone = toneProp ?? (ok ? 'ok' : 'warn');
+  const palette =
+    tone === 'ok'
+      ? { border: 'border-shield-green/20 bg-shield-green/5', fg: 'text-shield-green' }
+      : tone === 'info'
+        ? { border: 'border-info/20 bg-info/5', fg: 'text-info' }
+        : { border: 'border-amber-400/20 bg-amber-400/5', fg: 'text-amber-400' };
+
   return (
-    <div
-      className={`rounded-2xl border p-5 flex gap-4 ${
-        ok ? 'border-shield-green/20 bg-shield-green/5' : 'border-amber-400/20 bg-amber-400/5'
-      }`}
-    >
-      <div className={ok ? 'text-shield-green shrink-0' : 'text-amber-400 shrink-0'}>{icon}</div>
+    <div className={`rounded-2xl border p-5 flex gap-4 ${palette.border}`}>
+      <div className={`${palette.fg} shrink-0`}>{icon}</div>
       <div className="min-w-0">
-        <p
-          className={`font-mono text-[11px] uppercase tracking-wider ${
-            ok ? 'text-shield-green' : 'text-amber-400'
-          }`}
-        >
+        <p className={`font-mono text-[11px] uppercase tracking-wider ${palette.fg}`}>
           {title}
         </p>
         <p className="text-[11px] text-muted mt-1 leading-relaxed">{detail}</p>

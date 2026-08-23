@@ -31,7 +31,7 @@ export function TrustCenter() {
   const measurementOk = attestation.matches === true;
 
   // Green is reserved for "hardware-attested AND the on-chain measurement
-  // matches this build". Anything else is amber, because a simulator quote
+  // matches this build". Anything else is informational, because a simulator quote
   // proves the pipeline works and nothing about hardware.
   const verified = isHardware && measurementOk;
 
@@ -99,7 +99,7 @@ export function TrustCenter() {
         >
           <BorderTrail
             size={180}
-            className={verified ? 'bg-shield-green/50' : 'bg-amber-400/50'}
+            className={verified ? 'bg-shield-green/50' : 'bg-info/50'}
             style={{
               boxShadow: verified
                 ? '0 0 40px 10px rgba(74,222,128,0.3)'
@@ -113,7 +113,7 @@ export function TrustCenter() {
                 className={`w-14 h-14 rounded-2xl flex items-center justify-center border ${
                   verified
                     ? 'bg-shield-green/10 border-shield-green/20'
-                    : 'bg-amber-400/10 border-amber-400/20'
+                    : 'bg-info/10 border-info/20'
                 }`}
               >
                 {attestation.isLoading ? (
@@ -121,7 +121,7 @@ export function TrustCenter() {
                 ) : verified ? (
                   <ShieldCheck className="text-shield-green w-7 h-7" />
                 ) : (
-                  <ShieldAlert className="text-amber-400 w-7 h-7" />
+                  <ShieldAlert className="text-info w-7 h-7" />
                 )}
               </div>
               <div>
@@ -129,12 +129,12 @@ export function TrustCenter() {
                 <div className="flex items-center gap-2 mt-1">
                   <span
                     className={`w-2 h-2 rounded-full animate-pulse ${
-                      verified ? 'bg-shield-green' : 'bg-amber-400'
+                      verified ? 'bg-shield-green' : 'bg-info'
                     }`}
                   />
                   <span
                     className={`text-sm font-mono uppercase tracking-wider ${
-                      verified ? 'text-shield-green' : 'text-amber-400'
+                      verified ? 'text-shield-green' : 'text-info'
                     }`}
                   >
                     {statusLine}
@@ -151,8 +151,8 @@ export function TrustCenter() {
 
           {/* The honesty disclosure. Shown whenever this is not real hardware. */}
           {!isHardware && !attestation.isLoading && (
-            <div className="relative z-10 rounded-xl border border-amber-400/20 bg-amber-400/5 p-4 text-[12px] leading-relaxed text-amber-200/80">
-              <strong className="font-semibold text-amber-300">Simulator attestation.</strong>{' '}
+            <div className="relative z-10 rounded-xl border border-info/20 bg-info/5 p-4 text-[12px] leading-relaxed text-info/80">
+              <strong className="font-semibold text-info">Simulator attestation.</strong>{' '}
               Quotes come from the dstack simulator, not Intel-signed TDX hardware. The full
               verification chain still runs — the decision hash is bound into the quote&apos;s
               report_data, the event log is replayed against the attested RTMRs, and the measurement

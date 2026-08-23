@@ -18,11 +18,11 @@ export const BLOCK_EXPLORER = "https://sepolia.etherscan.io" as const;
  * compile target of ES2020+, and this file is consumed by a Next.js app whose
  * tsconfig is not ours to depend on.
  */
-export const DEPLOYED_AT_BLOCK = BigInt("11546925");
+export const DEPLOYED_AT_BLOCK = BigInt("11547873");
 
 export const ADDRESSES = {
-  aegisVault: "0xc5B48b4679d3CaF00800B5Ff2e1AeebA7DCe6738",
-  attestationVerifier: "0x183b687848Aa40120414Cc41d616d74C9c922190",
+  aegisVault: "0x518D2de68f1088a04a1F3a5Ea6360f357f80878d",
+  attestationVerifier: "0xCEe775680Ca45192F00181643DAba9A18150059B",
   oracleSigner: "0x0212AdAc560383416B4973Ded96c35Dcb912531A",
   smartAccount: "0x61e7eDBD1C14C7F0B14513958e94d9f58770E662",
   sessionKey: "0x61e7eDBD1C14C7F0B14513958e94d9f58770E662",
@@ -57,6 +57,24 @@ export const ASSETS = [
     "name": "USD Coin",
     "address": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
     "decimals": 6
+  },
+  {
+    "symbol": "DAI",
+    "name": "Dai Stablecoin",
+    "address": "0xFF34B3d4Aee8ddCd6F9AFFFB6Fe49bD371b8a357",
+    "decimals": 18
+  },
+  {
+    "symbol": "LINK",
+    "name": "Chainlink",
+    "address": "0x779877A7B0D9E8603169DdbD7836e478b4624789",
+    "decimals": 18
+  },
+  {
+    "symbol": "UNI",
+    "name": "Uniswap",
+    "address": "0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984",
+    "decimals": 18
   }
 ] as const;
 

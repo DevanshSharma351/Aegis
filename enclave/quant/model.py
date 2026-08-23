@@ -146,6 +146,39 @@ def _chat(messages: list[dict[str, str]]) -> str:
     return response["message"]["content"].strip()
 
 
+def _build_user_message(
+    signals: Mapping[str, Mapping[str, Any]],
+    expected_symbols: list[str],
+) -> str:
+    """
+    The signal payload, plus the budget constraint stated so the model can act on it.
+
+    A 1B model cannot reliably divide 1 by the number of assets. Given five
+    assets and only "sums to 1.0" in the system prompt, it returned 0.25 each
+    (summing to 1.25), or 0.0 each, and repeated the identical mistake on every
+    corrective retry -- the arithmetic was the obstacle, not the wording of the
+    rejection. Naming the assets and spelling out the equal-weight value fixed
+    it in 3 of 3 trials.
+
+    This constrains the arithmetic, not the decision. The model still chooses
+    the weights; it is only told what a valid set of weights must add up to, and
+    every allocation stays subject to the same validation either way.
+    """
+    count = len(expected_symbols)
+    equal_weight = round(1.0 / count, 4) if count else 0.0
+    names = ", ".join(expected_symbols)
+
+    lines = [
+        json.dumps(signals, indent=2, default=str),
+        "",
+        f"Allocate across exactly these {count} assets: {names}.",
+        f"The {count} allocation values MUST add up to exactly 1.0.",
+        f"If you weight them equally, each must be {equal_weight}, "
+        f"because {count} x {equal_weight} = 1.0.",
+    ]
+    return "\n".join(lines)
+
+
 def query_slm(signals: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
     """
     Ask the SLM for an allocation over the whitelisted assets.
@@ -165,7 +198,7 @@ def query_slm(signals: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
     expected_symbols = list(signals.keys())
     messages: list[dict[str, str]] = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": json.dumps(signals, indent=2, default=str)},
+        {"role": "user", "content": _build_user_message(signals, expected_symbols)},
     ]
 
     last_error = "no attempts were made"

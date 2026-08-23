@@ -218,4 +218,30 @@ class TestQuerySLM:
         assert user_message["role"] == "user"
         for field in ("sma_short", "sma_crossover", "zscore", "momentum"):
             assert field in user_message["content"]
-        assert "open" not in json.loads(user_message["content"])["WETH"]
+
+        # The message is the signal JSON followed by the budget constraint, so
+        # parse the JSON block rather than the whole string. Asserting on the
+        # entire body would break on any change to the instruction text while
+        # testing nothing about the property that matters.
+        payload = json.loads(user_message["content"].split("\n\n", 1)[0])
+        assert "open" not in payload["WETH"]
+        assert "close" in payload["WETH"]
+
+    def test_user_message_states_the_budget_constraint(self):
+        """A 1B model cannot divide 1 by the asset count on its own; with five
+        assets it returned 0.25 each and repeated it on every retry."""
+        with patch("quant.model._chat", return_value=json.dumps(VALID_ALLOCATION)):
+            query_slm(SAMPLE_SIGNALS)
+
+    def test_equal_weight_hint_matches_the_asset_count(self):
+        from quant.model import _build_user_message
+
+        symbols = ["A", "B", "C", "D", "E"]
+        message = _build_user_message({s: {} for s in symbols}, symbols)
+
+        assert "exactly these 5 assets" in message
+        assert "add up to exactly 1.0" in message
+        # 1/5 spelled out, because the model cannot compute it.
+        assert "0.2" in message
+        for symbol in symbols:
+            assert symbol in message

@@ -186,7 +186,7 @@ export function ActivityLog() {
                           className={`flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-wider px-2.5 py-1 rounded-md border shrink-0 ${
                             log.hardwareVerified
                               ? 'text-shield-green bg-shield-green/10 border-shield-green/20'
-                              : 'text-amber-300/90 bg-amber-400/10 border-amber-400/20'
+                              : 'text-info/90 bg-info/10 border-info/20'
                           }`}
                           title={
                             log.hardwareVerified

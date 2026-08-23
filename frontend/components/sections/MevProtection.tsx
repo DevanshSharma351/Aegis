@@ -37,7 +37,7 @@ function Layer({
     state === 'active' ? (
       <CheckCircle2 className="w-4 h-4 text-shield-green shrink-0 mt-0.5" />
     ) : state === 'partial' ? (
-      <ShieldAlert className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+      <ShieldAlert className="w-4 h-4 text-info shrink-0 mt-0.5" />
     ) : (
       <XCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
     );

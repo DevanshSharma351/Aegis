@@ -15,6 +15,40 @@
       "decimals": 6,
       "coingeckoId": "usd-coin",
       "network": "sepolia"
+    },
+    {
+      "symbol": "DAI",
+      "name": "Dai Stablecoin",
+      "address": "0xFF34B3d4Aee8ddCd6F9AFFFB6Fe49bD371b8a357",
+      "decimals": 18,
+      "coingeckoId": "dai",
+      "network": "sepolia"
+    },
+    {
+      "symbol": "LINK",
+      "name": "Chainlink",
+      "address": "0x779877A7B0D9E8603169DdbD7836e478b4624789",
+      "decimals": 18,
+      "coingeckoId": "chainlink",
+      "network": "sepolia"
+    },
+    {
+      "symbol": "UNI",
+      "name": "Uniswap",
+      "address": "0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984",
+      "decimals": 18,
+      "coingeckoId": "uniswap",
+      "network": "sepolia"
     }
+  ],
+  "$comment": [
+    "Whitelisted assets. Every one is enforced on-chain: AegisVault stores this set,",
+    "and the SLM's allocation is rejected if it names a symbol outside it.",
+    "Each entry must satisfy three independent things or it cannot be traded:",
+    "  1. a real Sepolia ERC-20 address,",
+    "  2. a Uniswap V3 pool against WETH that actually quotes (checked per fee tier),",
+    "  3. a CoinGecko id returning enough OHLC candles for the 21-period windows.",
+    "Testnet pool pricing is arbitrary and differs wildly between fee tiers, which is",
+    "why uniswapV3.ts quotes every tier and takes the best rather than assuming one."
   ]
 }

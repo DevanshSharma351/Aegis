@@ -21,6 +21,29 @@
   --color-glass: rgba(255, 255, 255, 0.06);
   --color-glass-border: rgba(255, 255, 255, 0.08);
 
+  /*
+   * Semantic colours.
+   *
+   * These were used throughout the components -- `text-accent` 53 times,
+   * `shield-green` 28 -- but never defined here, so Tailwind emitted no rule for
+   * any of them and every one silently did nothing. The visible effect was that
+   * amber, a Tailwind default that does resolve, became the only semantic colour
+   * on the page: the dashboard read as one long warning because success and
+   * accent were invisible.
+   *
+   * `accent` matches the indigo already hard-coded in the RainbowKit theme and
+   * the BorderTrail glows, so defining it here makes the rest of the UI agree
+   * with the parts that were using inline styles.
+   */
+  --color-accent: #6366f1;
+  --color-shield-green: #34d399;
+
+  /* For states that are correct and deliberate but not the maximal case -- a
+   * simulator attestation, a public route on a chain with no builders. Those
+   * are disclosures, not faults, and colouring them amber told the reader
+   * something was broken when nothing was. */
+  --color-info: #38bdf8;
+
   --font-sans: var(--font-inter), "Segoe UI", system-ui, sans-serif;
   --font-display: "BubbledotICG-FinePos", "Geist Pixel Circle", monospace;
   --font-mono: var(--font-silkscreen), monospace;
