@@ -51,8 +51,12 @@ export function PrivateSwap() {
     return () => clearInterval(timer);
   }, [phase, startedAt]);
 
-  const weth = balances.find((b) => b.symbol === 'WETH');
-  const spendable = weth ? BigInt(weth.spendable) : 0n;
+  const [sellToken, setSellToken] = React.useState('WETH');
+  const [buyToken, setBuyToken] = React.useState('USDC');
+  const sellAsset = balances.find((b) => b.symbol === sellToken);
+  // Must follow the selected asset, not WETH: validating a USDC sell against
+  // WETH's balance would block valid trades and permit impossible ones.
+  const spendable = sellAsset ? BigInt(sellAsset.spendable) : 0n;
 
   // Default to half the spendable balance, so a demo cannot accidentally
   // consume the entire shielded position in one click.
@@ -157,23 +161,61 @@ export function PrivateSwap() {
           )}
 
           <div className="relative z-10 mt-auto space-y-3">
+            {/* This is the manual rail, separate from Run Aegis: the agent picks
+                its own pair from the attested allocation. Leaving this fixed to
+                WETH -> USDC made it look like the only pair the system supports,
+                which is exactly the impression the pipeline no longer deserves. */}
             <label className="block text-[11px] text-muted font-mono uppercase tracking-wider">
-              WETH to swap (base units)
+              Pair and amount (base units)
             </label>
+            <div className="flex gap-2">
+              <select
+                value={sellToken}
+                onChange={(e) => setSellToken(e.target.value)}
+                className="bg-black/60 border border-white/10 rounded-2xl px-3 py-4 text-white text-sm font-mono focus:outline-none focus:border-accent"
+              >
+                {balances.map((b) => (
+                  <option key={b.symbol} value={b.symbol}>
+                    {b.symbol}
+                  </option>
+                ))}
+              </select>
+              <span className="self-center text-muted text-sm">→</span>
+              <select
+                value={buyToken}
+                onChange={(e) => setBuyToken(e.target.value)}
+                className="bg-black/60 border border-white/10 rounded-2xl px-3 py-4 text-white text-sm font-mono focus:outline-none focus:border-accent"
+              >
+                {balances
+                  .filter((b) => b.symbol !== sellToken)
+                  .map((b) => (
+                    <option key={b.symbol} value={b.symbol}>
+                      {b.symbol}
+                    </option>
+                  ))}
+              </select>
+            </div>
             <input
               value={sellAmount}
               onChange={(e) => setAmount(e.target.value.replace(/[^0-9]/g, ''))}
               placeholder={suggested || '0'}
               className="w-full bg-black/60 border border-white/10 rounded-2xl px-5 py-4 text-white placeholder-white/30 focus:outline-none focus:border-accent transition-all font-mono text-sm"
             />
-            {weth && (
+            {sellAsset && (
               <p className="text-[10px] text-muted font-mono">
-                = {formatUnits(sellAmount || '0', 18)} WETH · spendable {formatUnits(weth.spendable, 18)}
+                = {formatUnits(sellAmount || '0', sellAsset.decimals)} {sellToken} · spendable{' '}
+                {formatUnits(sellAsset.spendable, sellAsset.decimals)}
+              </p>
+            )}
+            {sellToken !== 'WETH' && buyToken !== 'WETH' && (
+              <p className="text-[10px] text-info/80 font-mono leading-relaxed">
+                {sellToken}/{buyToken} may have no direct Uniswap V3 pool on Sepolia — only WETH
+                pairs with every asset. Route through WETH if this fails to quote.
               </p>
             )}
 
             <button
-              onClick={() => execute({ sellToken: 'WETH', buyToken: 'USDC', sellAmount, slippageBps: 150 })}
+              onClick={() => execute({ sellToken, buyToken, sellAmount, slippageBps: 150 })}
               disabled={!canRun || !sellAmount || BigInt(sellAmount || '0') > spendable}
               className="w-full flex items-center justify-center gap-2 bg-white text-black hover:bg-white/90 disabled:opacity-30 disabled:cursor-not-allowed transition-all rounded-2xl py-4 text-sm font-medium font-mono uppercase tracking-wider"
             >

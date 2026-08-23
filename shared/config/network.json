@@ -34,5 +34,19 @@
     "factory": "0x0227628f3F023bb0B980b67D528571c95c6DaC1c",
     "defaultFeeTier": 500,
     "$comment": "Cookbook ships no working Sepolia swap adapter (its 0x v1 adapter targets the retired sepolia.api.0x.org, and its UniV2 adapters throw for Sepolia), so the sidecar builds a custom Cookbook Step against Uniswap V3, which does have real Sepolia liquidity in the 0.05% WETH/USDC pool."
+  },
+  "routing": {
+    "$comment": [
+      "Chain-specific symbols that were previously hardcoded in code.",
+      "wrappedNative: the ERC-20 wrapper for the chain's gas token. Shielding it can",
+      "  top up from ETH via deposit(); on Polygon this would be WMATIC, and a",
+      "  hardcoded 'WETH' would silently stop auto-wrapping there.",
+      "hub: the asset every planned trade must have on one side. The swap recipe is",
+      "  single-hop, so a pair needs a direct Uniswap V3 pool, and on Sepolia only",
+      "  WETH pairs with all four other whitelisted assets -- USDC/DAI has none.",
+      "Both must name symbols present in assets.json."
+    ],
+    "wrappedNative": "WETH",
+    "hub": "WETH"
   }
 }

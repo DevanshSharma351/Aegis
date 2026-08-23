@@ -51,6 +51,7 @@ ORACLE_URL = os.environ.get("AEGIS_ORACLE_URL", "http://oracle:8100")
 IDENTITY_URL = os.environ.get("AEGIS_IDENTITY_URL", "http://identity:8200")
 RAILGUN_SIDECAR_URL = os.environ.get("RAILGUN_SIDECAR_URL", "http://railgun-sidecar:8080")
 DEPLOYED_PATH = os.environ.get("AEGIS_DEPLOYED_PATH", "/app/shared/config/deployed.json")
+NETWORK_PATH = os.environ.get("AEGIS_NETWORK_PATH", "/app/shared/config/network.json")
 
 
 # ---------------------------------------------------------------------------
@@ -198,13 +199,25 @@ class NothingToRebalance(Exception):
 # rebalance that costs more than the drift it corrects is not a rebalance.
 MIN_REBALANCE_WEIGHT_DELTA = 0.02
 
-# The asset every trade must have on one side.
-#
-# The swap recipe is single-hop, so a planned pair needs a direct Uniswap V3
-# pool. Probing the Sepolia factory: WETH pairs with all four whitelisted assets
-# at every fee tier, while non-WETH pairs are incomplete -- USDC/DAI does not
-# exist. Constraining trades to the hub keeps every plan executable.
-HUB_SYMBOL = "WETH"
+def hub_symbol() -> str:
+    """The asset every planned trade must have on one side.
+
+    The swap recipe is single-hop, so a planned pair needs a direct Uniswap V3
+    pool. Probing the Sepolia factory: WETH pairs with all four whitelisted
+    assets at every fee tier, while non-WETH pairs are incomplete -- USDC/DAI
+    does not exist at all. Constraining trades to the hub keeps every plan
+    executable.
+
+    Read from network.json rather than compiled in, because which asset is the
+    liquid hub is a property of the chain. Hardcoding "WETH" was correct for
+    Sepolia and would quietly mis-route on a chain where it is not.
+    """
+    return _load_deployed_network().get("routing", {}).get("hub", "WETH")
+
+
+def _load_deployed_network() -> dict[str, Any]:
+    with open(NETWORK_PATH, "r", encoding="utf-8-sig") as handle:
+        return json.load(handle)
 
 
 class RebalancePlan:
@@ -344,9 +357,10 @@ def plan_rebalance(
     # next run moves that WETH into whatever remains under-weight. Two runs
     # rather than one, which is how a periodic rebalancer is meant to converge
     # anyway, and every trade it plans is guaranteed executable.
+    hub = hub_symbol()
     routed_via_hub = False
-    if sell_symbol != HUB_SYMBOL and buy_symbol != HUB_SYMBOL:
-        buy_symbol = HUB_SYMBOL
+    if sell_symbol != hub and buy_symbol != hub:
+        buy_symbol = hub
         routed_via_hub = True
 
     trade_value = gap * portfolio

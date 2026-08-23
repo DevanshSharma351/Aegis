@@ -46,6 +46,8 @@ export interface AssetConfig {
 }
 
 export interface NetworkConfig {
+  /** Chain-specific symbols; see network.json routing. */
+  routing?: { wrappedNative?: string; hub?: string };
   network: string;
   chainId: number;
   blockExplorer: string;

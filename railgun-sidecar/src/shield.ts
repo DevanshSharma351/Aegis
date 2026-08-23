@@ -36,10 +36,17 @@ const GAS_RESERVE_WEI = 10_000_000_000_000_000n; // 0.01 ETH
 
 /**
  * Whether this asset is the chain's native wrapper, and so mintable 1:1 from
- * the ETH the submitter already holds.
+ * the gas token the submitter already holds.
+ *
+ * Read from network.json rather than compared against a literal "WETH". Which
+ * ERC-20 wraps the native token is a property of the chain -- it is WMATIC on
+ * Polygon -- and a hardcoded symbol would silently stop auto-wrapping there
+ * while still claiming to support it.
  */
 function isWrappedNative(symbol: string): boolean {
-  return symbol.toUpperCase() === "WETH";
+  const wrapped = networkConfig().routing?.wrappedNative;
+  if (!wrapped) return false;
+  return symbol.toUpperCase() === wrapped.toUpperCase();
 }
 
 /**

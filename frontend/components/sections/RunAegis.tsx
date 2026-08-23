@@ -44,12 +44,22 @@ export function RunAegis({ isConnected }: { isConnected: boolean }) {
   const withdrawAction = useWithdraw();
   const depositBusy = ['signing', 'building', 'approving', 'shielding'].includes(deposit.step);
 
-  const weth = balances.find((b) => b.symbol === 'WETH');
-  const spendable = weth ? BigInt(weth.spendable) : 0n;
+  // Seed the cap from the largest spendable position rather than WETH's: the
+  // agent may sell any whitelisted asset, and a WETH-derived default would cap
+  // a USDC trade at an unrelated number.
+  const spendable = balances.reduce(
+    (largest, b) => (BigInt(b.spendable) > largest ? BigInt(b.spendable) : largest),
+    0n,
+  );
 
   const [shieldAmount, setShieldAmount] = React.useState('2000000000000000');
   const [swapAmount, setSwapAmount] = React.useState('');
   const [withdrawSymbol, setWithdrawSymbol] = React.useState('WETH');
+  const [depositSymbol, setDepositSymbol] = React.useState('WETH');
+  // Decimals come from the same balance record the symbol did, so an 18-decimal
+  // and a 6-decimal asset are never rendered with the same divisor.
+  const depositDecimals =
+    balances.find((b) => b.symbol === depositSymbol)?.decimals ?? 18;
   const [withdrawAmount, setWithdrawAmount] = React.useState('');
   const effectiveSwap = swapAmount || (spendable > 0n ? (spendable / 2n).toString() : '');
 
@@ -102,23 +112,39 @@ export function RunAegis({ isConnected }: { isConnected: boolean }) {
             <div>
               <h3 className="font-display tracking-wide text-lg text-white/90">1 · Deposit</h3>
               <p className="text-[10px] text-muted font-mono uppercase tracking-wider mt-1">
-                Your WETH → Railgun shielded pool
+                Your tokens → Railgun shielded pool
               </p>
             </div>
           </div>
 
           <div className="relative z-10 space-y-3">
-            <input
-              value={shieldAmount}
-              onChange={(e) => setShieldAmount(e.target.value.replace(/[^0-9]/g, ''))}
-              className="w-full bg-black/60 border border-white/10 rounded-2xl px-5 py-3 text-white focus:outline-none focus:border-accent transition-all font-mono text-sm"
-            />
+            {/* Any whitelisted asset, not just WETH. The agent allocates across
+                all five, so restricting deposits to one made four of them
+                unreachable: nothing could ever hold them to be rebalanced. */}
+            <div className="flex gap-2">
+              <select
+                value={depositSymbol}
+                onChange={(e) => setDepositSymbol(e.target.value)}
+                className="bg-black/60 border border-white/10 rounded-2xl px-3 py-3 text-white text-sm font-mono focus:outline-none focus:border-accent"
+              >
+                {(balances.length ? balances.map((b) => b.symbol) : ['WETH']).map((sym) => (
+                  <option key={sym} value={sym}>
+                    {sym}
+                  </option>
+                ))}
+              </select>
+              <input
+                value={shieldAmount}
+                onChange={(e) => setShieldAmount(e.target.value.replace(/[^0-9]/g, ''))}
+                className="flex-1 min-w-0 bg-black/60 border border-white/10 rounded-2xl px-5 py-3 text-white focus:outline-none focus:border-accent transition-all font-mono text-sm"
+              />
+            </div>
             <p className="text-[10px] text-muted font-mono">
-              = {formatUnits(shieldAmount || '0', 18)} WETH (base units)
+              = {formatUnits(shieldAmount || '0', depositDecimals)} {depositSymbol} (base units)
             </p>
 
             <button
-              onClick={() => deposit.deposit('WETH', shieldAmount)}
+              onClick={() => deposit.deposit(depositSymbol, shieldAmount)}
               disabled={!isConnected || depositBusy || !shieldAmount}
               className="w-full flex items-center justify-center gap-2 bg-white/10 hover:bg-white/20 border border-white/10 text-white disabled:opacity-30 disabled:cursor-not-allowed transition-all rounded-2xl py-3 text-sm font-mono uppercase tracking-wider"
             >
@@ -152,7 +178,8 @@ export function RunAegis({ isConnected }: { isConnected: boolean }) {
                   <CheckCircle2 className="w-4 h-4" /> Deposited
                 </div>
                 <div className="text-muted">
-                  {formatUnits(deposit.result.amount, 18)} {deposit.result.symbol} into the shielded pool
+                  {formatUnits(deposit.result.amount, depositDecimals)} {deposit.result.symbol} into
+                  the shielded pool
                 </div>
                 <a
                   href={explorerTx(deposit.result.txHash)}
@@ -297,15 +324,19 @@ export function RunAegis({ isConnected }: { isConnected: boolean }) {
 
           <div className="md:w-64">
             <label className="block text-[10px] text-muted font-mono uppercase tracking-wider mb-1">
-              WETH to trade
+              Max trade size
             </label>
             <input
               value={effectiveSwap}
               onChange={(e) => setSwapAmount(e.target.value.replace(/[^0-9]/g, ''))}
               className="w-full bg-black/60 border border-white/10 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-accent font-mono text-xs"
             />
+            {/* An upper bound in base units, not a choice of asset. The agent
+                picks which asset to sell from its attested allocation, so
+                labelling this "WETH" was wrong the moment the direction stopped
+                being hardcoded -- the last run sold USDC. */}
             <p className="text-[9px] text-muted font-mono mt-1">
-              {formatUnits(effectiveSwap || '0', 18)} WETH
+              cap in base units · the agent chooses the pair
             </p>
           </div>
 
