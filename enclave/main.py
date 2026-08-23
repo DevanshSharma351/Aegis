@@ -250,6 +250,94 @@ async def railgun_balances() -> dict[str, Any]:
         raise HTTPException(status_code=503, detail="Railgun sidecar unreachable: " + str(exc))
 
 
+class PrepareShieldRequest(BaseModel):
+    token: str
+    amount: str
+    # The depositor's own address and their signature over the constant from
+    # GET /railgun/shield/message. Neither grants this service any authority:
+    # it returns unsigned calldata that only the depositor's wallet can send.
+    from_address: str = Field(alias="from")
+    signature: str
+
+    model_config = {"populate_by_name": True}
+
+
+class UnshieldRequest(BaseModel):
+    token: str
+    amount: str
+    recipient: str
+
+
+@app.get("/railgun/shield/message")
+async def railgun_shield_message() -> dict[str, Any]:
+    """The constant a depositor signs before shielding from their own wallet."""
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.get(RAILGUN_SIDECAR_URL + "/shield/message")
+        if response.status_code != 200:
+            raise HTTPException(status_code=response.status_code, detail=response.text[:400])
+        return response.json()
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="Railgun sidecar unreachable: " + str(exc))
+
+
+@app.post("/railgun/shield/prepare")
+async def railgun_shield_prepare(request: PrepareShieldRequest) -> dict[str, Any]:
+    """
+    Build the calls for a shield the depositor signs themselves.
+
+    Returns unsigned calldata. The browser sends it with the user's own wallet,
+    so the deposit is on-chain as a transaction from their address rather than
+    from the operator's.
+    """
+    payload = {
+        "token": request.token,
+        "amount": request.amount,
+        "from": request.from_address,
+        "signature": request.signature,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=300) as client:
+            response = await client.post(RAILGUN_SIDECAR_URL + "/shield/prepare", json=payload)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="Railgun sidecar unreachable: " + str(exc))
+
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code, detail=_sidecar_detail(response))
+    return response.json()
+
+
+@app.post("/railgun/unshield")
+async def railgun_unshield(request: UnshieldRequest) -> dict[str, Any]:
+    """
+    Withdraw a shielded balance to a public address.
+
+    Long timeout by design: this generates a real Groth16 proof and returns only
+    once the transaction is mined, so a caller never sees a pending withdrawal
+    presented as a completed one.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=900) as client:
+            response = await client.post(
+                RAILGUN_SIDECAR_URL + "/unshield", json=request.model_dump()
+            )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="Railgun sidecar unreachable: " + str(exc))
+
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code, detail=_sidecar_detail(response))
+    return response.json()
+
+
+def _sidecar_detail(response: httpx.Response) -> str:
+    """Surface the sidecar's own reason verbatim rather than reinterpreting it."""
+    try:
+        body = response.json()
+        return body.get("error") or body.get("detail") or response.text[:400]
+    except Exception:
+        return response.text[:400]
+
+
 @app.get("/railgun/gas-preflight")
 async def railgun_gas_preflight() -> dict[str, Any]:
     """

@@ -14,7 +14,8 @@ import express from "express";
 import { assets, explorerTxUrl, networkConfig } from "./config";
 import { poiConfigured, poiNodeUrls, startEngine } from "./engine";
 import { createSubmitter } from "./submission";
-import { shield } from "./shield";
+import { prepareShield, shield, shieldSignatureMessage } from "./shield";
+import { unshield } from "./unshield";
 import { unshieldSwapReshield } from "./swap";
 import {
   get0zkAddress,
@@ -119,6 +120,10 @@ app.get("/health", (_req, res) => {
       shield: ready,
       balances: ready,
       unshieldSwapReshield: ready && poiConfigured(),
+      // Spending shielded funds needs a proof, so withdrawal has the same
+      // precondition as the swap: without POI there is no exit.
+      unshield: ready && poiConfigured(),
+      depositorSignedShield: ready,
     },
   });
 });
@@ -210,6 +215,53 @@ app.post("/shield", async (req, res) => {
     res.json({ success: true, ...result });
   } catch (error) {
     res.status(500).json({ success: false, error: (error as Error).message });
+  }
+});
+
+/** The constant a depositor signs so their note-encryption key can be derived. */
+app.get("/shield/message", (_req, res) => {
+  res.json({ message: shieldSignatureMessage() });
+});
+
+/**
+ * Build the calldata for a depositor-signed shield.
+ *
+ * Returns unsigned calls. This process never sees the depositor's key and the
+ * depositor never sees this process's -- see prepareShield for why the build
+ * and the send belong on opposite sides.
+ */
+app.post("/shield/prepare", async (req, res) => {
+  try {
+    const { token, amount, from, signature } = req.body ?? {};
+    if (typeof token !== "string") throw new Error("token is required");
+    if (typeof from !== "string") throw new Error("from is required");
+    if (typeof signature !== "string") throw new Error("signature is required");
+
+    res.json(
+      await prepareShield(token, parseAmount(amount, "amount"), from, signature),
+    );
+  } catch (error) {
+    res.status(400).json({ error: (error as Error).message });
+  }
+});
+
+/**
+ * Unshield to a public address.
+ *
+ * Long-running: this generates a real Groth16 proof and returns only once the
+ * transaction is mined, so a caller never sees a pending state reported as a
+ * completed withdrawal.
+ */
+app.post("/unshield", async (req, res) => {
+  try {
+    if (!ready) throw new Error("engine is not ready");
+    const { token, amount, recipient } = req.body ?? {};
+    if (typeof token !== "string") throw new Error("token is required");
+    if (typeof recipient !== "string") throw new Error("recipient is required");
+
+    res.json(await unshield(token, parseAmount(amount, "amount"), recipient));
+  } catch (error) {
+    res.status(400).json({ error: (error as Error).message });
   }
 });
 

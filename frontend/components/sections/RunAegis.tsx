@@ -15,7 +15,8 @@ import {
 } from 'lucide-react';
 import { BorderTrail } from '@/components/core/border-trail';
 
-import { useAegisPipeline, useShieldFunds } from '@/lib/hooks/useAegisPipeline';
+import { useAegisPipeline } from '@/lib/hooks/useAegisPipeline';
+import { useDeposit, useWithdraw } from '@/lib/hooks/useVaultActions';
 import {
   formatUnits,
   useRailgunStatus,
@@ -39,20 +40,28 @@ export function RunAegis({ isConnected }: { isConnected: boolean }) {
   const status = useRailgunStatus();
   const { balances, railgunAddress, isLoading: balancesLoading, refresh } = useShieldedBalances();
   const { run, reset, job, starting, startError, isRunning } = useAegisPipeline();
-  const shieldAction = useShieldFunds();
+  const deposit = useDeposit();
+  const withdrawAction = useWithdraw();
+  const depositBusy = ['signing', 'building', 'approving', 'shielding'].includes(deposit.step);
 
   const weth = balances.find((b) => b.symbol === 'WETH');
   const spendable = weth ? BigInt(weth.spendable) : 0n;
 
   const [shieldAmount, setShieldAmount] = React.useState('2000000000000000');
   const [swapAmount, setSwapAmount] = React.useState('');
+  const [withdrawSymbol, setWithdrawSymbol] = React.useState('WETH');
+  const [withdrawAmount, setWithdrawAmount] = React.useState('');
   const effectiveSwap = swapAmount || (spendable > 0n ? (spendable / 2n).toString() : '');
 
   // Refresh balances after a shield lands, so the position reflects reality
   // rather than needing a manual reload.
   React.useEffect(() => {
-    if (shieldAction.phase === 'done') refresh();
-  }, [shieldAction.phase, refresh]);
+    if (deposit.step === 'done') refresh();
+  }, [deposit.step, refresh]);
+
+  React.useEffect(() => {
+    if (withdrawAction.phase === 'done') refresh();
+  }, [withdrawAction.phase, refresh]);
 
   React.useEffect(() => {
     if (job?.status === 'succeeded') refresh();
@@ -91,9 +100,9 @@ export function RunAegis({ isConnected }: { isConnected: boolean }) {
               <Shield className="text-accent w-6 h-6" />
             </div>
             <div>
-              <h3 className="font-display tracking-wide text-lg text-white/90">1 · Shield Funds</h3>
+              <h3 className="font-display tracking-wide text-lg text-white/90">1 · Deposit</h3>
               <p className="text-[10px] text-muted font-mono uppercase tracking-wider mt-1">
-                WETH → Railgun shielded pool
+                Your WETH → Railgun shielded pool
               </p>
             </div>
           </div>
@@ -109,47 +118,56 @@ export function RunAegis({ isConnected }: { isConnected: boolean }) {
             </p>
 
             <button
-              onClick={() => shieldAction.shield('WETH', shieldAmount)}
-              disabled={!isConnected || shieldAction.phase === 'running' || !shieldAmount}
+              onClick={() => deposit.deposit('WETH', shieldAmount)}
+              disabled={!isConnected || depositBusy || !shieldAmount}
               className="w-full flex items-center justify-center gap-2 bg-white/10 hover:bg-white/20 border border-white/10 text-white disabled:opacity-30 disabled:cursor-not-allowed transition-all rounded-2xl py-3 text-sm font-mono uppercase tracking-wider"
             >
-              {shieldAction.phase === 'running' ? (
+              {depositBusy ? (
                 <>
-                  <Loader2 className="w-4 h-4 animate-spin" /> Shielding…
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  {deposit.step === 'signing' && 'Sign in wallet…'}
+                  {deposit.step === 'building' && 'Building…'}
+                  {deposit.step === 'approving' && 'Approving…'}
+                  {deposit.step === 'shielding' && 'Shielding…'}
                 </>
               ) : (
                 <>
-                  Shield Funds <ArrowRight className="w-4 h-4" />
+                  Deposit from my wallet <ArrowRight className="w-4 h-4" />
                 </>
               )}
             </button>
 
-            {!isConnected && (
-              <p className="text-[10px] text-muted font-mono">Connect a wallet to enable.</p>
-            )}
+            <p className="text-[10px] text-muted font-mono leading-relaxed">
+              {isConnected ? (
+                <>Signed by {truncateHash(deposit.address ?? '', 6, 4)} — your wallet sends the
+                  transaction, so the deposit is on-chain as yours.</>
+              ) : (
+                'Connect a wallet to enable.'
+              )}
+            </p>
 
-            {shieldAction.phase === 'done' && shieldAction.result && (
+            {deposit.step === 'done' && deposit.result && (
               <div className="rounded-xl border border-shield-green/20 bg-shield-green/5 p-3 text-[11px] font-mono space-y-1">
                 <div className="flex items-center gap-2 text-shield-green">
-                  <CheckCircle2 className="w-4 h-4" /> Mined in block {shieldAction.result.blockNumber}
+                  <CheckCircle2 className="w-4 h-4" /> Deposited
                 </div>
                 <div className="text-muted">
-                  Shielded {formatUnits(shieldAction.result.amount, 18)} {shieldAction.result.symbol}
+                  {formatUnits(deposit.result.amount, 18)} {deposit.result.symbol} into the shielded pool
                 </div>
                 <a
-                  href={explorerTx(shieldAction.result.txHash)}
+                  href={explorerTx(deposit.result.txHash)}
                   target="_blank"
                   rel="noreferrer"
                   className="text-accent hover:text-accent/80 break-all block"
                 >
-                  {truncateHash(shieldAction.result.txHash, 12, 8)}
+                  {truncateHash(deposit.result.txHash, 12, 8)}
                 </a>
               </div>
             )}
 
-            {shieldAction.phase === 'error' && (
+            {deposit.step === 'error' && (
               <div className="rounded-xl border border-red-500/20 bg-red-500/5 p-3 text-[11px] font-mono text-red-400/90 break-all">
-                {shieldAction.error}
+                {deposit.error}
               </div>
             )}
           </div>
@@ -185,6 +203,75 @@ export function RunAegis({ isConnected }: { isConnected: boolean }) {
               {railgunAddress}
             </code>
           )}
+
+          {/* Withdraw. A pool with no exit is not a vault, it is a donation. */}
+          <div className="relative z-10 pt-4 mt-1 border-t border-white/5 space-y-3">
+            <p className="text-[10px] text-muted uppercase tracking-wider font-mono">Withdraw</p>
+
+            <div className="flex gap-2">
+              <select
+                value={withdrawSymbol}
+                onChange={(e) => setWithdrawSymbol(e.target.value)}
+                className="bg-black/60 border border-white/10 rounded-xl px-3 py-2 text-white text-xs font-mono focus:outline-none focus:border-accent"
+              >
+                {balances.map((b) => (
+                  <option key={b.symbol} value={b.symbol}>
+                    {b.symbol}
+                  </option>
+                ))}
+              </select>
+              <input
+                value={withdrawAmount}
+                onChange={(e) => setWithdrawAmount(e.target.value.replace(/[^0-9]/g, ''))}
+                placeholder="amount in base units"
+                className="flex-1 min-w-0 bg-black/60 border border-white/10 rounded-xl px-3 py-2 text-white text-xs font-mono focus:outline-none focus:border-accent"
+              />
+            </div>
+
+            <button
+              onClick={() => withdrawAction.withdraw(withdrawSymbol, withdrawAmount)}
+              disabled={!isConnected || withdrawAction.phase === 'proving' || !withdrawAmount}
+              className="w-full flex items-center justify-center gap-2 bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-white disabled:opacity-30 disabled:cursor-not-allowed transition-all rounded-xl py-2.5 text-xs font-mono uppercase tracking-wider"
+            >
+              {withdrawAction.phase === 'proving' ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" /> Proving… (1–3 min)
+                </>
+              ) : (
+                <>Withdraw to my wallet</>
+              )}
+            </button>
+
+            <p className="text-[10px] text-muted font-mono leading-relaxed">
+              Spending a shielded note needs a Groth16 proof, so this takes a minute or two.
+              Railgun charges 25 bps. Sent to {truncateHash(withdrawAction.address ?? '', 6, 4)}.
+            </p>
+
+            {withdrawAction.phase === 'done' && withdrawAction.result && (
+              <div className="rounded-xl border border-shield-green/20 bg-shield-green/5 p-3 text-[11px] font-mono space-y-1">
+                <div className="flex items-center gap-2 text-shield-green">
+                  <CheckCircle2 className="w-4 h-4" /> Withdrawn
+                </div>
+                <div className="text-muted">
+                  Received {withdrawAction.result.netAmount} (fee {withdrawAction.result.unshieldFee})
+                </div>
+                <a
+                  href={explorerTx(withdrawAction.result.txHash)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-accent hover:text-accent/80 break-all block"
+                >
+                  {truncateHash(withdrawAction.result.txHash, 12, 8)}
+                </a>
+              </div>
+            )}
+
+            {withdrawAction.phase === 'error' && (
+              <div className="rounded-xl border border-red-500/20 bg-red-500/5 p-3 text-[11px] font-mono text-red-400/90 break-all">
+                {withdrawAction.error}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
