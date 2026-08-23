@@ -12,6 +12,11 @@ Built for **Road to Devcon — NITK Surathkal**, on the theme *Make Private Apps
 ![Aegis](docs/images/hero.png)
 
 ---
+## Demo Video
+
+[Watch Demo](https://youtu.be/M53P269aTuY)
+
+---
 
 ## The problem
 
