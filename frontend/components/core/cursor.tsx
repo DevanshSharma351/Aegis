@@ -18,6 +18,16 @@ export type CursorProps = {
   className?: string;
   springConfig?: SpringOptions;
   attachToParent?: boolean;
+  /**
+   * CSS selector for the region this custom cursor replaces the native one in.
+   *
+   * Without it, a detached cursor hid the native pointer across the entire
+   * document via `* { cursor: none !important }`, which is almost never what is
+   * wanted: every button, link and input outside the decorated region also lost
+   * its pointer, so the page read as unclickable even though the handlers were
+   * firing normally.
+   */
+  hideNativeCursorWithin?: string;
   transition?: Transition;
   variants?: {
     initial: Variant;
@@ -32,6 +42,7 @@ export function Cursor({
   className,
   springConfig,
   attachToParent,
+  hideNativeCursorWithin,
   variants,
   transition,
   onPositionChange,
@@ -39,7 +50,9 @@ export function Cursor({
   const cursorX = useMotionValue(0);
   const cursorY = useMotionValue(0);
   const cursorRef = useRef<HTMLDivElement>(null);
-  const [isVisible, setIsVisible] = useState(!attachToParent);
+  const [isVisible, setIsVisible] = useState(
+    !attachToParent && !hideNativeCursorWithin,
+  );
 
   const [mounted, setMounted] = useState(false);
 
@@ -55,7 +68,11 @@ export function Cursor({
     if (!attachToParent) {
       const style = document.createElement('style');
       style.id = 'global-cursor-none';
-      style.innerHTML = '* { cursor: none !important; }';
+      // Scoped to the decorated region. Unscoped, this hid the pointer on the
+      // whole page -- including the nav and every button below the fold.
+      style.innerHTML = hideNativeCursorWithin
+        ? `${hideNativeCursorWithin}, ${hideNativeCursorWithin} * { cursor: none !important; }`
+        : '';
       document.head.appendChild(style);
     } else {
       document.body.style.cursor = 'auto';
@@ -65,6 +82,21 @@ export function Cursor({
       cursorX.set(e.clientX);
       cursorY.set(e.clientY);
       onPositionChange?.(e.clientX, e.clientY);
+
+      // The blob stands in for the pointer, so it must only be drawn where the
+      // pointer is actually hidden. Otherwise both are visible at once.
+      if (!attachToParent && hideNativeCursorWithin) {
+        const region = document.querySelector(hideNativeCursorWithin);
+        if (region) {
+          const r = region.getBoundingClientRect();
+          setIsVisible(
+            e.clientX >= r.left &&
+              e.clientX <= r.right &&
+              e.clientY >= r.top &&
+              e.clientY <= r.bottom,
+          );
+        }
+      }
     };
 
     const handleScroll = () => {
@@ -81,7 +113,7 @@ export function Cursor({
         document.getElementById('global-cursor-none')?.remove();
       }
     };
-  }, [cursorX, cursorY, onPositionChange, attachToParent]);
+  }, [cursorX, cursorY, onPositionChange, attachToParent, hideNativeCursorWithin]);
 
   const cursorXSpring = useSpring(cursorX, springConfig || { duration: 0 });
   const cursorYSpring = useSpring(cursorY, springConfig || { duration: 0 });

@@ -41,22 +41,18 @@ const data = [
     href: '#logs',
   },
   {
-    title: 'Vault',
+    title: 'Agent',
     icon: (
       <Terminal className='h-full w-full text-white/70' />
     ),
-    href: '#depositor',
+    href: '#run-aegis',
   },
 ];
 
-import { ConnectButton, useConnectModal } from '@rainbow-me/rainbowkit';
-import { useAccount } from 'wagmi';
+import { ConnectButton } from '@rainbow-me/rainbowkit';
 import { Wallet } from 'lucide-react';
 
 export function DockNav({ onHoverChange }: { onHoverChange?: (hovered: boolean) => void }) {
-  const { isConnected } = useAccount();
-  const { openConnectModal } = useConnectModal();
-
   return (
     <div 
       className='fixed bottom-6 left-1/2 z-50 -translate-x-1/2'
@@ -69,16 +65,16 @@ export function DockNav({ onHoverChange }: { onHoverChange?: (hovered: boolean) 
             key={idx}
             className='aspect-square rounded-full bg-white/[0.04] hover:bg-white/[0.08] transition-colors border border-white/5 cursor-pointer'
             onClick={() => {
-              if (!isConnected && openConnectModal) {
-                openConnectModal();
-              } else {
-                if (item.href === '#home') {
-                  window.scrollTo({ top: 0, behavior: 'smooth' });
-                } else {
-                  const el = document.querySelector(item.href);
-                  el?.scrollIntoView({ behavior: 'smooth' });
-                }
+              // Navigation is not a privileged action. Gating every icon behind
+              // a wallet made the whole dock open the connect modal instead of
+              // navigating, and the sections it scrolls to are public reads
+              // that exist so a sceptic can check the claims without an account.
+              if (item.href === '#home') {
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+                return;
               }
+              const el = document.querySelector(item.href);
+              el?.scrollIntoView({ behavior: 'smooth' });
             }}
           >
             <DockLabel>{item.title}</DockLabel>

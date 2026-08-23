@@ -20,10 +20,18 @@ export default function Home() {
   const [isNavHovered, setIsNavHovered] = useState(false);
 
   const handleGetStarted = () => {
-    if (isConnected) {
-      document.getElementById('depositor')?.scrollIntoView({ behavior: 'smooth' });
-    } else if (openConnectModal) {
-      openConnectModal();
+    if (!isConnected) {
+      openConnectModal?.();
+      return;
+    }
+    // #depositor was removed with DepositorView; run-aegis is the action
+    // surface now. Optional chaining meant the old id failing to resolve was
+    // silent -- the hero button simply did nothing.
+    const target = document.getElementById('run-aegis');
+    if (target) {
+      target.scrollIntoView({ behavior: 'smooth' });
+    } else {
+      window.scrollTo({ top: window.innerHeight, behavior: 'smooth' });
     }
   };
 

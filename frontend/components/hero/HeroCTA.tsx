@@ -45,6 +45,9 @@ export function HeroCTA({ isConnected, onClick }: { isConnected: boolean; onClic
     <div className="relative flex h-2 w-full items-center justify-center anim" style={{ '--d': '0.4s' } as React.CSSProperties}>
       <Cursor
         attachToParent={false}
+        // Without this the component hides the native pointer document-wide,
+        // which made the nav and every button below the hero read as dead.
+        hideNativeCursorWithin=".hero"
         variants={{
           initial: { scale: 0.3, opacity: 0 },
           animate: { scale: 1, opacity: 1 },
