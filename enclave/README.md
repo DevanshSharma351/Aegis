@@ -61,13 +61,39 @@ stage 7 wastes all of it. A failed preflight leaves **every** stage `pending`.
 | Oracle Verification | quote verified off-chain, attestation signed |
 | ERC-4337 Execution | UserOperation calling `AegisVault.rebalance` |
 | Proof of Innocence | real precondition check: aggregator configured **and** balance POI-validated |
-| Private Swap | Groth16 proof + atomic RelayAdapt transaction |
+| Private Swap | the trade the allocation implies: Groth16 proof + atomic RelayAdapt |
 | Reshield | verified by polling for the shielded balance to actually increase |
 | Confirmed | final state |
 
 A stage moves to `succeeded` only on a real result. On failure the pipeline
 stops, the failing stage is named, and **downstream stages stay `pending`** — they
 are never reported as succeeded.
+
+## The decision actually drives the trade
+
+For a while it did not. The SLM's allocation was hashed into the TDX quote,
+signed by the oracle and recorded on-chain — and then the executor sold a
+hardcoded WETH -> USDC amount that the HTTP caller had chosen. The attested
+decision and the executed trade were unrelated, so "the agent rebalanced" was
+not a claim this system could support.
+
+`plan_rebalance` closes that gap. It values every shielded position using the
+same prices the model was shown, compares the resulting weights against the
+attested target, and executes the single trade that closes the largest gap.
+`sellAmount` in the request is now only an upper bound: a demo can cap the size,
+but the direction belongs to the decision.
+
+One trade per run rather than a full rebalance, because each swap needs its own
+Groth16 proof and the engine takes 30-60s to see a spend — a complete rebalance
+runs into minutes, and a failure halfway leaves the portfolio in a state nobody
+chose. The next run picks up where this one stopped, which is how a periodic
+rebalancer converges anyway.
+
+**Trades route through WETH.** The recipe is single-hop, so a pair needs a direct
+Uniswap V3 pool. On Sepolia only WETH is a complete hub; USDC/DAI has no pool at
+all, and a run that planned that pair died at the swap stage having already spent
+a UserOperation and a rate-limit slot. When neither side of the ideal pair is
+WETH, the sell leg goes into WETH instead and the next run distributes it.
 
 Two of these are genuine gates, not labels:
 

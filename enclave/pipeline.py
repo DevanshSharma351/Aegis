@@ -185,6 +185,195 @@ async def _post(client: httpx.AsyncClient, url: str, payload: dict, stage_key: s
     return response.json()
 
 
+
+# ---------------------------------------------------------------------------
+# Turning an allocation into a trade
+# ---------------------------------------------------------------------------
+
+class NothingToRebalance(Exception):
+    """The portfolio already matches the target closely enough to leave alone."""
+
+
+# Below this the trade is not worth a Groth16 proof and two Railgun fees. A
+# rebalance that costs more than the drift it corrects is not a rebalance.
+MIN_REBALANCE_WEIGHT_DELTA = 0.02
+
+# The asset every trade must have on one side.
+#
+# The swap recipe is single-hop, so a planned pair needs a direct Uniswap V3
+# pool. Probing the Sepolia factory: WETH pairs with all four whitelisted assets
+# at every fee tier, while non-WETH pairs are incomplete -- USDC/DAI does not
+# exist. Constraining trades to the hub keeps every plan executable.
+HUB_SYMBOL = "WETH"
+
+
+class RebalancePlan:
+    """One corrective trade, derived from the attested allocation."""
+
+    def __init__(
+        self,
+        sell_symbol: str,
+        buy_symbol: str,
+        sell_amount: int,
+        weights: dict[str, float],
+        target: dict[str, float],
+        portfolio_value_usd: float,
+        trade_value_usd: float,
+        routed_via_hub: bool = False,
+    ) -> None:
+        self.sell_symbol = sell_symbol
+        self.buy_symbol = buy_symbol
+        self.sell_amount = sell_amount
+        self.weights = weights
+        self.target = target
+        self.portfolio_value_usd = portfolio_value_usd
+        self.trade_value_usd = trade_value_usd
+        self.routed_via_hub = routed_via_hub
+
+    def as_data(self) -> dict[str, Any]:
+        return {
+            "sellSymbol": self.sell_symbol,
+            "buySymbol": self.buy_symbol,
+            "sellAmount": str(self.sell_amount),
+            "currentWeights": {k: round(v, 4) for k, v in self.weights.items()},
+            "targetWeights": {k: round(v, 4) for k, v in self.target.items()},
+            "portfolioValueUsd": round(self.portfolio_value_usd, 2),
+            "tradeValueUsd": round(self.trade_value_usd, 2),
+            # True when the ideal counterparty had no pool and this leg sells
+            # into the hub instead, leaving the next run to finish the move.
+            "routedViaHub": self.routed_via_hub,
+        }
+
+
+def plan_rebalance(
+    allocations: Mapping[str, float],
+    balances: list[Mapping[str, Any]],
+    signals: Mapping[str, Mapping[str, Any]],
+    max_sell_amount: int | None = None,
+) -> RebalancePlan:
+    """
+    Decide which single trade moves the portfolio closest to the attested target.
+
+    WHY A SINGLE TRADE. Reaching the target exactly takes one swap per
+    over-weight asset, and each needs its own Groth16 proof plus the engine's
+    30-60s post-spend sync, so a full rebalance runs into minutes and a failure
+    halfway leaves the portfolio in a state nobody chose. Closing the largest
+    gap captures most of the correction for one proof, and the next run picks up
+    where this one stopped -- which is how a periodic rebalancer is supposed to
+    behave anyway.
+
+    WHY IT USES THE SIGNAL PRICES. The same numbers the model saw. Pricing the
+    portfolio from a second source would mean the trade was computed against
+    figures the attested decision never referenced.
+
+    Raises:
+        NothingToRebalance: drift is under MIN_REBALANCE_WEIGHT_DELTA, or there
+            is nothing spendable to sell. Both are legitimate outcomes and the
+            caller should skip the swap rather than force one.
+    """
+    prices: dict[str, float] = {}
+    for symbol, signal in signals.items():
+        close = signal.get("close")
+        if close is None or float(close) <= 0:
+            raise StageFailure(
+                "private-swap",
+                f"No usable price for {symbol} in the signal output, so the portfolio "
+                f"cannot be valued and no trade can be derived from the allocation.",
+            )
+        prices[symbol] = float(close)
+
+    by_symbol = {b["symbol"]: b for b in balances}
+
+    # Value every position with the prices the decision was made against.
+    values: dict[str, float] = {}
+    for symbol in allocations:
+        held = by_symbol.get(symbol)
+        if held is None:
+            values[symbol] = 0.0
+            continue
+        units = int(held["balance"]) / (10 ** int(held["decimals"]))
+        values[symbol] = units * prices.get(symbol, 0.0)
+
+    portfolio = sum(values.values())
+    if portfolio <= 0:
+        raise NothingToRebalance("the shielded portfolio is empty, so there is nothing to rebalance")
+
+    weights = {s: v / portfolio for s, v in values.items()}
+
+    # Positive delta means under-weight and wanting to be bought.
+    deltas = {s: allocations[s] - weights[s] for s in allocations}
+
+    # Only sell what is actually spendable: a note awaiting POI validation is
+    # part of the portfolio's value but cannot be moved yet, so treating it as
+    # sellable would plan a trade that fails at proof time.
+    def spendable_units(symbol: str) -> float:
+        held = by_symbol.get(symbol)
+        if held is None:
+            return 0.0
+        return int(held["spendable"]) / (10 ** int(held["decimals"]))
+
+    sellable = [s for s in allocations if deltas[s] < 0 and spendable_units(s) > 0]
+    buyable = [s for s in allocations if deltas[s] > 0]
+
+    if not sellable or not buyable:
+        raise NothingToRebalance(
+            "no over-weight asset has a POI-validated balance to sell, so no corrective "
+            "trade can be made yet"
+        )
+
+    sell_symbol = min(sellable, key=lambda s: deltas[s])
+    buy_symbol = max(buyable, key=lambda s: deltas[s])
+
+    gap = min(-deltas[sell_symbol], deltas[buy_symbol])
+    if gap < MIN_REBALANCE_WEIGHT_DELTA:
+        raise NothingToRebalance(
+            f"portfolio is within {MIN_REBALANCE_WEIGHT_DELTA:.0%} of the target "
+            f"(largest correctable gap {gap:.2%}), so no trade is worth its fees"
+        )
+
+    # Route through the hub when the ideal pair has no pool.
+    #
+    # The recipe performs a single-hop swap, so the pair it is given must have a
+    # direct Uniswap V3 pool. On Sepolia only WETH is a complete hub -- every
+    # whitelisted asset has a WETH pool at all four fee tiers -- while the
+    # non-WETH pairs are patchy and USDC/DAI has no pool at all. A run that
+    # planned USDC -> DAI reached the swap stage and failed there, after
+    # spending a UserOperation and a rate-limit slot.
+    #
+    # Selling into WETH instead still closes the sell side of the gap, and the
+    # next run moves that WETH into whatever remains under-weight. Two runs
+    # rather than one, which is how a periodic rebalancer is meant to converge
+    # anyway, and every trade it plans is guaranteed executable.
+    routed_via_hub = False
+    if sell_symbol != HUB_SYMBOL and buy_symbol != HUB_SYMBOL:
+        buy_symbol = HUB_SYMBOL
+        routed_via_hub = True
+
+    trade_value = gap * portfolio
+    sell_price = prices[sell_symbol]
+    sell_decimals = int(by_symbol[sell_symbol]["decimals"])
+
+    sell_amount = int((trade_value / sell_price) * (10 ** sell_decimals))
+    sell_amount = min(sell_amount, int(by_symbol[sell_symbol]["spendable"]))
+    if max_sell_amount is not None:
+        sell_amount = min(sell_amount, max_sell_amount)
+
+    if sell_amount <= 0:
+        raise NothingToRebalance(
+            f"the corrective {sell_symbol} trade rounds to zero at the current price"
+        )
+
+    return RebalancePlan(
+        sell_symbol=sell_symbol,
+        buy_symbol=buy_symbol,
+        sell_amount=sell_amount,
+        weights=weights,
+        target=dict(allocations),
+        portfolio_value_usd=portfolio,
+        trade_value_usd=trade_value,
+        routed_via_hub=routed_via_hub,
+    )
+
 async def _assert_swap_gas_affordable() -> None:
     """Fail the run up front if the submitter cannot fund a RelayAdapt call.
 
@@ -224,8 +413,8 @@ async def _assert_swap_gas_affordable() -> None:
     )
 
 
-async def _assert_poi_spendable(sell_amount: str) -> None:
-    """Fail up front if the balance is not POI-validated yet.
+async def _assert_poi_spendable() -> None:
+    """Fail up front if nothing in the pool can be spent yet.
 
     Same reasoning as the gas preflight: this is knowable before anything is
     spent, and the stages in between cost a UserOperation and one of the session
@@ -233,8 +422,16 @@ async def _assert_poi_spendable(sell_amount: str) -> None:
     unspendable for a few minutes while the aggregator validates it, so this is
     the common case rather than an edge one.
 
-    The `poi` stage still performs the same checks when it runs -- this does not
-    replace the gate, it just stops a run that the gate would certainly reject.
+    DELIBERATELY DIRECTION-AGNOSTIC. This runs before the decision exists, so it
+    cannot know which asset will be sold -- that comes from the allocation, and
+    the allocation has not been made yet. It previously demanded a fixed amount
+    of WETH, which was only meaningful while the trade was hardcoded to
+    WETH->USDC; once the direction follows the decision, a WETH check would
+    refuse runs that were going to sell something else entirely.
+
+    So it asserts the weaker, still-useful precondition: the aggregator is
+    configured and *something* is spendable. The `poi` stage re-checks the
+    specific asset once the plan names it.
     """
     async with httpx.AsyncClient(timeout=300) as client:
         try:
@@ -251,18 +448,22 @@ async def _assert_poi_spendable(sell_amount: str) -> None:
             f"Nothing was executed.",
         )
 
-    weth = next((b for b in balances.get("balances", []) if b["symbol"] == "WETH"), None)
-    spendable = int(weth["spendable"]) if weth else 0
-    if spendable >= int(sell_amount):
+    held = balances.get("balances", [])
+    if any(int(b["spendable"]) > 0 for b in held):
         return
 
-    total = int(weth["balance"]) if weth else 0
+    shielded = sum(int(b["balance"]) for b in held)
     raise StageFailure(
         "poi",
-        f"Insufficient POI-validated WETH: need {sell_amount}, spendable {spendable} "
-        f"(total shielded {total}). A note becomes spendable once the aggregator "
-        f"validates it, which takes a few minutes after a shield or a reshield. "
-        f"Nothing was executed - retry shortly.",
+        "No POI-validated balance to trade with: every shielded asset has zero "
+        "spendable. "
+        + (
+            "The balance exists but the aggregator has not validated it yet, which "
+            "takes a few minutes after a shield or a reshield - retry shortly."
+            if shielded > 0
+            else "The shielded pool is empty; deposit first."
+        )
+        + " Nothing was executed.",
     )
 
 
@@ -314,7 +515,7 @@ async def run_pipeline(
         # succeeded.
         if not skip_swap:
             await _assert_swap_gas_affordable()
-            await _assert_poi_spendable(sell_amount)
+            await _assert_poi_spendable()
 
         # ---------------------------------------------------------------
         # 1. Market analysis
@@ -468,122 +669,175 @@ async def run_pipeline(
                 )
 
             balances = (await client.get(RAILGUN_SIDECAR_URL + "/balances")).json()
-            weth = next((b for b in balances["balances"] if b["symbol"] == "WETH"), None)
-            spendable = int(weth["spendable"]) if weth else 0
 
-            if spendable < int(sell_amount):
-                total = int(weth["balance"]) if weth else 0
-                raise StageFailure(
-                    "poi",
-                    f"Insufficient POI-validated WETH: need {sell_amount}, spendable {spendable} "
-                    f"(total shielded {total}). "
-                    + (
-                        "The balance exists but is not yet POI-validated; retry shortly."
-                        if total >= int(sell_amount)
-                        else "Shield more first."
-                    ),
+            # The trade comes from the attested allocation, not from the caller.
+            # `sell_amount` is now only an upper bound, so a demo can cap size
+            # without being able to choose the direction -- that is the decision's
+            # to make, and it is the decision that was signed and recorded.
+            try:
+                plan = plan_rebalance(
+                    decision["allocations"],
+                    balances["balances"],
+                    signals,
+                    max_sell_amount=int(sell_amount) if sell_amount else None,
                 )
+            except NothingToRebalance as exc:
+                for key in ("private-swap", "reshield"):
+                    stage = job.stage(key)
+                    stage.status = "skipped"
+                    stage.detail = f"No trade needed: {exc}"
 
-            finish(
-                "poi",
-                f"Validated against {', '.join(poi.get('nodeUrls', []))}",
-                mode=poi.get("mode"),
-                nodeUrls=poi.get("nodeUrls", []),
-                requiredList=poi.get("requiredList"),
-                spendable=str(spendable),
-            )
+                finish(
+                    "poi",
+                    f"Validated against {', '.join(poi.get('nodeUrls', []))}; no trade needed",
+                    mode=poi.get("mode"),
+                    nodeUrls=poi.get("nodeUrls", []),
+                    requiredList=poi.get("requiredList"),
+                )
+                plan = None
+            else:
+                held = next(
+                    (b for b in balances["balances"] if b["symbol"] == plan.sell_symbol), None
+                )
+                spendable = int(held["spendable"]) if held else 0
+                if spendable < plan.sell_amount:
+                    total = int(held["balance"]) if held else 0
+                    raise StageFailure(
+                        "poi",
+                        f"Insufficient POI-validated {plan.sell_symbol}: need "
+                        f"{plan.sell_amount}, spendable {spendable} (total shielded {total}). "
+                        + (
+                            "The balance exists but is not yet POI-validated; retry shortly."
+                            if total >= plan.sell_amount
+                            else "Shield more first."
+                        ),
+                    )
+
+                finish(
+                    "poi",
+                    f"Validated against {', '.join(poi.get('nodeUrls', []))}",
+                    mode=poi.get("mode"),
+                    nodeUrls=poi.get("nodeUrls", []),
+                    requiredList=poi.get("requiredList"),
+                    spendable=str(spendable),
+                    plan=plan.as_data(),
+                )
 
             # -----------------------------------------------------------
             # 7. Private swap (atomic unshield -> swap -> reshield)
             # -----------------------------------------------------------
-            begin(
-                "private-swap",
-                "Generating a Groth16 proof and submitting the RelayAdapt transaction",
-            )
-            swap = await _post(
-                client,
-                RAILGUN_SIDECAR_URL + "/unshield-swap-reshield",
-                {
-                    "sellToken": "WETH",
-                    "buyToken": "USDC",
-                    "sellAmount": sell_amount,
-                    "slippageBps": slippage_bps,
-                },
-                "private-swap",
-                "Railgun sidecar",
-            )
-
-            finish(
-                "private-swap",
-                f"Swapped {swap['netSellAmount']} WETH for {swap['execution']['actualBuyAmount']} USDC "
-                f"({swap['execution']['versusQuoteBps']:+d} bps vs quote, "
-                f"{swap['execution']['otherSwapsOnPoolInBlock']} other swap(s) on this pool in block)",
-                txHash=swap["txHash"],
-                blockNumber=swap["blockNumber"],
-                gasUsed=swap["gasUsed"],
-                proofDurationMs=swap["proofDurationMs"],
-                feeTier=swap["feeTier"],
-                submission=swap["submission"],
-                execution=swap["execution"],
-                explorerUrl=swap["explorerUrl"],
-            )
-
-            # -----------------------------------------------------------
-            # 8. Reshield, confirmed by balance delta
-            # -----------------------------------------------------------
-            # The reshield happens inside the same atomic transaction as the
-            # swap, so it cannot fail independently. It is verified rather than
-            # assumed: the USDC balance must actually have increased.
-            begin("reshield", "Confirming the proceeds returned to the shielded pool")
-
-            usdc_before = next(
-                (int(b["balance"]) for b in balances["balances"] if b["symbol"] == "USDC"), 0
-            )
-
-            # Poll rather than reading once.
-            #
-            # The reshield lands in the same transaction as the swap, but the
-            # engine has to scan the new commitment before the balance reflects
-            # it. Reading immediately reported a completed reshield as a failure
-            # -- a false negative that is worse than no check, because it
-            # contradicts a transaction that actually succeeded.
-            usdc_after = usdc_before
+            # Bound before the branch: a run that needs no trade still reports
+            # balances, and reading them from the pre-plan snapshot is correct
+            # because nothing moved.
             after = balances
-            deadline = time.time() + 90
 
-            while time.time() < deadline:
-                after = (await client.get(RAILGUN_SIDECAR_URL + "/balances")).json()
-                usdc_after = next(
-                    (int(b["balance"]) for b in after["balances"] if b["symbol"] == "USDC"), 0
+            if plan is None:
+                swap = None
+            else:
+                begin(
+                    "private-swap",
+                    f"Closing the {plan.sell_symbol} -> {plan.buy_symbol} gap: Groth16 proof "
+                    f"and RelayAdapt transaction",
                 )
-                if usdc_after > usdc_before:
-                    break
-                await asyncio.sleep(5)
+                swap = await _post(
+                    client,
+                    RAILGUN_SIDECAR_URL + "/unshield-swap-reshield",
+                    {
+                        "sellToken": plan.sell_symbol,
+                        "buyToken": plan.buy_symbol,
+                        "sellAmount": str(plan.sell_amount),
+                        "slippageBps": slippage_bps,
+                    },
+                    "private-swap",
+                    "Railgun sidecar",
+                )
 
-            gained = usdc_after - usdc_before
+                finish(
+                    "private-swap",
+                    f"Swapped {swap['netSellAmount']} {plan.sell_symbol} for "
+                    f"{swap['execution']['actualBuyAmount']} {plan.buy_symbol} "
+                    f"({swap['execution']['versusQuoteBps']:+d} bps vs quote, "
+                    f"{swap['execution']['otherSwapsOnPoolInBlock']} other swap(s) on this pool in block)",
+                    txHash=swap["txHash"],
+                    blockNumber=swap["blockNumber"],
+                    gasUsed=swap["gasUsed"],
+                    proofDurationMs=swap["proofDurationMs"],
+                    feeTier=swap["feeTier"],
+                    submission=swap["submission"],
+                    execution=swap["execution"],
+                    explorerUrl=swap["explorerUrl"],
+                    plan=plan.as_data(),
+                )
 
-            if gained <= 0:
-                raise StageFailure(
+                # -------------------------------------------------------
+                # 8. Reshield, confirmed by balance delta
+                # -------------------------------------------------------
+                # The reshield happens inside the same atomic transaction as
+                # the swap, so it cannot fail independently. It is verified
+                # rather than assumed: the bought asset's balance must actually
+                # have increased.
+                begin("reshield", "Confirming the proceeds returned to the shielded pool")
+
+                bought_before = next(
+                    (
+                        int(b["balance"])
+                        for b in balances["balances"]
+                        if b["symbol"] == plan.buy_symbol
+                    ),
+                    0,
+                )
+
+                # Poll rather than reading once.
+                #
+                # The reshield lands in the same transaction as the swap, but
+                # the engine has to scan the new commitment before the balance
+                # reflects it. Reading immediately reported a completed reshield
+                # as a failure -- a false negative that is worse than no check,
+                # because it contradicts a transaction that actually succeeded.
+                bought_after = bought_before
+                after = balances
+                deadline = time.time() + 90
+
+                while time.time() < deadline:
+                    after = (await client.get(RAILGUN_SIDECAR_URL + "/balances")).json()
+                    bought_after = next(
+                        (
+                            int(b["balance"])
+                            for b in after["balances"]
+                            if b["symbol"] == plan.buy_symbol
+                        ),
+                        0,
+                    )
+                    if bought_after > bought_before:
+                        break
+                    await asyncio.sleep(5)
+
+                gained = bought_after - bought_before
+
+                if gained <= 0:
+                    raise StageFailure(
+                        "reshield",
+                        f"Swap transaction {swap['txHash']} succeeded but the shielded "
+                        f"{plan.buy_symbol} balance did not increase "
+                        f"({bought_before} -> {bought_after}) within 90s. Either the proceeds "
+                        "were not reshielded, or the engine has not finished scanning -- "
+                        "check /railgun/balances before assuming the former.",
+                    )
+
+                if gained < int(swap["minimumBuyAmount"]):
+                    raise StageFailure(
+                        "reshield",
+                        f"Reshielded {gained} {plan.buy_symbol}, below the "
+                        f"{swap['minimumBuyAmount']} slippage floor.",
+                    )
+
+                finish(
                     "reshield",
-                    f"Swap transaction {swap['txHash']} succeeded but the shielded USDC balance "
-                    f"did not increase ({usdc_before} -> {usdc_after}) within 90s. Either the "
-                    "proceeds were not reshielded, or the engine has not finished scanning -- "
-                    "check /railgun/balances before assuming the former.",
+                    f"Reshielded {gained} {plan.buy_symbol} into the 0zk wallet",
+                    reshielded=str(gained),
+                    balances=after["balances"],
+                    railgunAddress=after.get("railgunAddress"),
                 )
-
-            if gained < int(swap["minimumBuyAmount"]):
-                raise StageFailure(
-                    "reshield",
-                    f"Reshielded {gained} USDC, below the {swap['minimumBuyAmount']} slippage floor.",
-                )
-
-            finish(
-                "reshield",
-                f"Reshielded {gained} USDC into the 0zk wallet",
-                reshielded=str(gained),
-                balances=after["balances"],
-                railgunAddress=after.get("railgunAddress"),
-            )
 
             # -----------------------------------------------------------
             # 9. Confirmed
@@ -591,7 +845,8 @@ async def run_pipeline(
             begin("confirmed", "Verifying final state")
             finish(
                 "confirmed",
-                f"Vault log #{submit_response['sequence']} and Railgun tx {swap['txHash'][:14]}… confirmed",
+                f"Vault log #{submit_response['sequence']}"
+                + (f" and Railgun tx {swap['txHash'][:14]}… confirmed" if swap else "; no trade needed"),
             )
 
             job.status = "succeeded"
@@ -611,6 +866,10 @@ async def run_pipeline(
                 },
                 "vault": submit_response,
                 "swap": swap,
+                # What the allocation implied, and which gap this run closed.
+                # Present even when no trade was needed, because "already on
+                # target" is a result rather than an absence of one.
+                "rebalance": plan.as_data() if plan else None,
                 "balances": after["balances"],
                 "railgunAddress": after.get("railgunAddress"),
             }
