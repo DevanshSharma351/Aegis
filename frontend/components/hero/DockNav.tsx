@@ -50,7 +50,7 @@ const data = [
 ];
 
 import { ConnectButton } from '@rainbow-me/rainbowkit';
-import { Wallet } from 'lucide-react';
+import { AlertTriangle, Wallet } from 'lucide-react';
 
 export function DockNav({ onHoverChange }: { onHoverChange?: (hovered: boolean) => void }) {
   return (
@@ -94,12 +94,20 @@ export function DockNav({ onHoverChange }: { onHoverChange?: (hovered: boolean) 
             mounted,
           }) => {
             const ready = mounted && authenticationStatus !== 'loading';
-            const connected =
+            const authed =
               ready &&
-              account &&
-              chain &&
-              (!authenticationStatus ||
-                authenticationStatus === 'authenticated');
+              !!account &&
+              (!authenticationStatus || authenticationStatus === 'authenticated');
+
+            // `chain` is optional in RainbowKit's render props: it is undefined
+            // when the wallet sits on a network absent from the wagmi config,
+            // and this app configures Sepolia alone. Folding that into a single
+            // `connected` flag produced a button that did nothing at all --
+            // `connected` was false, so the handler called openConnectModal,
+            // and RainbowKit ignores that while wagmi is already connected.
+            // Wrong network is its own state and needs its own action.
+            const wrongNetwork = authed && (!chain || chain.unsupported === true);
+            const connected = authed && !wrongNetwork;
 
             return (
               <div
@@ -113,22 +121,35 @@ export function DockNav({ onHoverChange }: { onHoverChange?: (hovered: boolean) 
                 })}
               >
                 <DockItem
-                  className='aspect-square rounded-full bg-accent/10 hover:bg-accent/20 transition-colors border border-accent/20 cursor-pointer ml-2'
+                  className={`aspect-square rounded-full transition-colors cursor-pointer ml-2 border ${
+                    wrongNetwork
+                      ? 'bg-amber-400/10 hover:bg-amber-400/20 border-amber-400/30'
+                      : 'bg-accent/10 hover:bg-accent/20 border-accent/20'
+                  }`}
                   onClick={() => {
-                    if (!connected && openConnectModal) {
+                    // Exhaustive on purpose: every reachable state maps to an
+                    // action, so the button can never be a no-op.
+                    if (!authed) {
                       openConnectModal();
-                    }
-                    if (connected && openAccountModal) {
+                    } else if (wrongNetwork) {
+                      openChainModal();
+                    } else {
                       openAccountModal();
                     }
                   }}
                 >
                   <DockLabel>
-                    {connected ? account.displayName : 'Connect Wallet'}
+                    {wrongNetwork
+                      ? 'Wrong network — switch to Sepolia'
+                      : connected
+                        ? account!.displayName
+                        : 'Connect Wallet'}
                   </DockLabel>
                   <DockIcon>
-                    {connected && account.ensAvatar ? (
+                    {connected && account?.ensAvatar ? (
                       <img src={account.ensAvatar} alt="ENS Avatar" className="w-full h-full rounded-full" />
+                    ) : wrongNetwork ? (
+                      <AlertTriangle className='h-full w-full text-amber-400' />
                     ) : (
                       <Wallet className={connected ? 'h-full w-full text-accent' : 'h-full w-full text-white'} />
                     )}
