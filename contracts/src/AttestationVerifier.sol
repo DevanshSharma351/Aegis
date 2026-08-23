@@ -53,6 +53,7 @@ contract AttestationVerifier {
     error AttestationExpired(uint64 expiry, uint256 nowTs);
     error MeasurementMismatch(bytes32 expected, bytes32 provided);
     error UnauthorizedSigner(address recovered, address expected);
+    error HardwareAttestationRequired();
 
     // -----------------------------------------------------------------------
     // Events
@@ -60,6 +61,7 @@ contract AttestationVerifier {
 
     event ExpectedMeasurementUpdated(bytes32 indexed previous, bytes32 indexed current);
     event OwnershipTransferred(address indexed previous, address indexed current);
+    event RequireHardwareUpdated(bool previous, bool current);
 
     // -----------------------------------------------------------------------
     // Storage
@@ -95,12 +97,33 @@ contract AttestationVerifier {
     bytes32 public expectedMeasurement;
 
     /**
+     * @notice When true, only decisions from verified TDX hardware are accepted.
+     *
+     * @dev The measurement already separates a simulator from real hardware,
+     *      because MRTD and RTMR0-2 differ between them and `expectedMeasurement`
+     *      is burned in from whichever enclave was running at deploy time. But
+     *      that binding is *implicit*: reading this contract told you which build
+     *      was authorised, never whether that build ran on real silicon.
+     *
+     *      `hardwareVerified` is now part of the signed struct, so the oracle
+     *      cannot report it one way off-chain and leave the chain to assume
+     *      another. This flag turns that signed fact into an enforced condition.
+     *
+     *      Left false at deploy so a simulator-backed deployment is honest rather
+     *      than broken: it records `hardwareVerified=false` against every decision
+     *      instead of pretending otherwise. Turn it on once running on real TDX,
+     *      and simulator-backed proofs stop verifying.
+     */
+    bool public requireHardware;
+
+    /**
      * @notice Domain separator constant mixed into the signed digest.
      * @dev Distinguishes an Aegis attestation from any other structure the oracle
      *      key might ever be asked to sign.
      */
-    bytes32 public constant ATTESTATION_TYPEHASH =
-        keccak256("AegisAttestation(uint256 chainId,address verifier,bytes32 decisionHash,bytes32 measurement,uint64 expiry)");
+    bytes32 public constant ATTESTATION_TYPEHASH = keccak256(
+        "AegisAttestation(uint256 chainId,address verifier,bytes32 decisionHash,bytes32 measurement,bool hardwareVerified,uint64 expiry)"
+    );
 
     /// @dev secp256k1 group order / 2, used to reject malleable signatures.
     uint256 private constant _HALF_CURVE_ORDER =
@@ -139,6 +162,18 @@ contract AttestationVerifier {
         emit ExpectedMeasurementUpdated(previous, _measurement);
     }
 
+    /**
+     * @notice Require verified TDX hardware for every subsequent decision.
+     * @dev Not one-way: an operator moving back to a simulator to debug must be
+     *      able to say so openly rather than be tempted to forge a quote. Every
+     *      change emits `RequireHardwareUpdated`, so it is publicly auditable.
+     */
+    function setRequireHardware(bool value) external onlyOwner {
+        bool previous = requireHardware;
+        requireHardware = value;
+        emit RequireHardwareUpdated(previous, value);
+    }
+
     /// @notice Hand governance to a timelock/multisig, or to address(0) to freeze.
     function transferOwnership(address newOwner) external onlyOwner {
         address previous = owner;
@@ -157,13 +192,22 @@ contract AttestationVerifier {
      *      drift between the two would otherwise show up only as an opaque
      *      `UnauthorizedSigner` revert.
      */
-    function attestationDigest(bytes32 decisionHash, bytes32 measurement, uint64 expiry)
-        public
-        view
-        returns (bytes32)
-    {
+    function attestationDigest(
+        bytes32 decisionHash,
+        bytes32 measurement,
+        bool hardwareVerified,
+        uint64 expiry
+    ) public view returns (bytes32) {
         bytes32 structHash = keccak256(
-            abi.encode(ATTESTATION_TYPEHASH, block.chainid, address(this), decisionHash, measurement, expiry)
+            abi.encode(
+                ATTESTATION_TYPEHASH,
+                block.chainid,
+                address(this),
+                decisionHash,
+                measurement,
+                hardwareVerified,
+                expiry
+            )
         );
         // EIP-191 personal_sign envelope — lets the oracle use any standard
         // `eth_sign`-style signer without custom EIP-712 domain plumbing.
@@ -173,20 +217,38 @@ contract AttestationVerifier {
     /**
      * @notice Verify an attestation proof for a rebalance decision.
      * @param decisionHash Hash of the decision, bound into the TDX quote report_data.
-     * @param attestationProof `abi.encode(bytes32 measurement, uint64 expiry, bytes signature)`.
-     * @return True on success. Reverts with a specific error on any failure, so
-     *         callers get an actionable reason rather than a bare `false`.
+     * @param attestationProof `abi.encode(bytes32 measurement, uint64 expiry,
+     *        bool hardwareVerified, bytes signature)`.
+     * @return hardwareVerified Whether the quote's signature chain was verified
+     *         against Intel collateral. Reverts with a specific error on any
+     *         failure, so a return value can safely carry information rather
+     *         than being a bare success flag.
      */
-    function verify(bytes32 decisionHash, bytes calldata attestationProof) external view returns (bool) {
-        (bytes32 measurement, uint64 expiry, bytes memory signature) = _decodeProof(attestationProof);
+    function verify(bytes32 decisionHash, bytes calldata attestationProof)
+        external
+        view
+        returns (bool hardwareVerified)
+    {
+        bytes32 measurement;
+        uint64 expiry;
+        bytes memory signature;
+        (measurement, expiry, hardwareVerified, signature) = _decodeProof(attestationProof);
 
         if (block.timestamp > expiry) revert AttestationExpired(expiry, block.timestamp);
         if (measurement != expectedMeasurement) revert MeasurementMismatch(expectedMeasurement, measurement);
 
-        address recovered = _recover(attestationDigest(decisionHash, measurement, expiry), signature);
+        // The flag lives inside the signed struct, so a caller cannot flip it to
+        // pass this check without invalidating the signature below.
+        if (requireHardware && !hardwareVerified) revert HardwareAttestationRequired();
+
+        address recovered =
+            _recover(attestationDigest(decisionHash, measurement, hardwareVerified, expiry), signature);
         if (recovered != oracleSigner) revert UnauthorizedSigner(recovered, oracleSigner);
 
-        return true;
+        // Returned rather than discarded so the caller can record *how* the
+        // decision was attested. Reverting is the only failure signal; `false`
+        // here means "validly attested, but by a simulator".
+        return hardwareVerified;
     }
 
     // -----------------------------------------------------------------------
@@ -196,14 +258,15 @@ contract AttestationVerifier {
     function _decodeProof(bytes calldata proof)
         private
         pure
-        returns (bytes32 measurement, uint64 expiry, bytes memory signature)
+        returns (bytes32 measurement, uint64 expiry, bool hardwareVerified, bytes memory signature)
     {
-        // Minimum well-formed encoding: three head words (measurement, expiry,
-        // signature offset) plus the signature's length word. Anything shorter
-        // cannot be abi.decoded, and would otherwise surface as an opaque
-        // decoder panic instead of a named error.
-        if (proof.length < 128) revert MalformedProof();
-        (measurement, expiry, signature) = abi.decode(proof, (bytes32, uint64, bytes));
+        // Minimum well-formed encoding: four head words (measurement, expiry,
+        // hardwareVerified, signature offset) plus the signature's length word.
+        // Anything shorter cannot be abi.decoded, and would otherwise surface as
+        // an opaque decoder panic instead of a named error.
+        if (proof.length < 160) revert MalformedProof();
+        (measurement, expiry, hardwareVerified, signature) =
+            abi.decode(proof, (bytes32, uint64, bool, bytes));
     }
 
     /**

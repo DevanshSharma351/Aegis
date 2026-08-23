@@ -157,6 +157,14 @@ export function TrustCenter() {
               verification chain still runs — the decision hash is bound into the quote&apos;s
               report_data, the event log is replayed against the attested RTMRs, and the measurement
               is derived from the quote itself — but none of it proves the code ran on real hardware.
+              <br />
+              <br />
+              This is not left to the interface to disclose. <code>hardwareVerified</code> is part
+              of the struct the oracle signs, so the chain records it against every decision, and{' '}
+              <code>AttestationVerifier.requireHardware</code> can reject simulator-backed proofs
+              outright. It is off here because this deployment genuinely is a simulator — turning it
+              on without real TDX would simply stop the agent working, which is the correct
+              behaviour.
             </div>
           )}
 

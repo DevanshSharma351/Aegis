@@ -194,7 +194,13 @@ export function bundlerUrl(): string {
     net.bundler.apiKeyEnvVar,
     "the ERC-4337 bundler and paymaster are reached through Pimlico",
   );
-  return net.bundler.urlTemplate.replace("{key}", key);
+  // {chainId} comes from the same file as the chain everything else uses, so
+  // the bundler can never be pointed at a different network than the account.
+  // The chain id used to be baked into this URL as a literal, which meant a
+  // network switch silently kept submitting to the old chain's bundler.
+  return net.bundler.urlTemplate
+    .replace("{chainId}", String(net.chainId))
+    .replace("{key}", key);
 }
 
 export function chain(): Chain {

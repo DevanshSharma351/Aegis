@@ -17,6 +17,7 @@ Solidity side (AttestationVerifier.sol):
         address(this),          // address
         decisionHash,           // bytes32
         measurement,            // bytes32
+        hardwareVerified,       // bool
         expiry                  // uint64
     ))
     digest = keccak256("\\x19Ethereum Signed Message:\\n32" || structHash)
@@ -39,7 +40,7 @@ from eth_utils import keccak, to_checksum_address
 # keccak256("AegisAttestation(uint256 chainId,address verifier,bytes32 decisionHash,bytes32 measurement,uint64 expiry)")
 ATTESTATION_TYPEHASH = keccak(
     b"AegisAttestation(uint256 chainId,address verifier,bytes32 decisionHash,"
-    b"bytes32 measurement,uint64 expiry)"
+    b"bytes32 measurement,bool hardwareVerified,uint64 expiry)"
 )
 
 # How long a signed attestation stays valid. Short enough that a leaked
@@ -61,6 +62,9 @@ class SignedAttestation:
     signer: str
     verifier: str
     chain_id: int
+    # Inside the signed struct, so the chain cannot be told one thing while the
+    # oracle reported another off-chain.
+    hardware_verified: bool = False
 
     @property
     def proof(self) -> bytes:
@@ -68,12 +72,15 @@ class SignedAttestation:
         `abi.encode(bytes32 measurement, uint64 expiry, bytes signature)` —
         the exact calldata AttestationVerifier._decodeProof expects.
         """
-        return _abi_encode_proof(self.measurement, self.expiry, self.signature)
+        return _abi_encode_proof(
+            self.measurement, self.expiry, self.hardware_verified, self.signature
+        )
 
     def as_dict(self) -> dict[str, object]:
         return {
             "decisionHash": "0x" + self.decision_hash.hex(),
             "measurement": "0x" + self.measurement.hex(),
+            "hardwareVerified": self.hardware_verified,
             "expiry": self.expiry,
             "signature": "0x" + self.signature.hex(),
             "proof": "0x" + self.proof.hex(),
@@ -96,6 +103,7 @@ def attestation_digest(
     decision_hash: bytes,
     measurement: bytes,
     expiry: int,
+    hardware_verified: bool = False,
 ) -> bytes:
     """Recompute AttestationVerifier.attestationDigest off-chain."""
     verifier_bytes = bytes.fromhex(to_checksum_address(verifier)[2:])
@@ -106,6 +114,8 @@ def attestation_digest(
         + _word(verifier_bytes)
         + _word(decision_hash)
         + _word(measurement)
+        # Solidity encodes `bool` as a full 32-byte word of 0 or 1.
+        + _word(bytes([1 if hardware_verified else 0]))
         + _word(expiry.to_bytes(8, "big"))
     )
 
@@ -113,15 +123,24 @@ def attestation_digest(
     return keccak(b"\x19Ethereum Signed Message:\n32" + struct_hash)
 
 
-def _abi_encode_proof(measurement: bytes, expiry: int, signature: bytes) -> bytes:
+def _abi_encode_proof(
+    measurement: bytes, expiry: int, hardware_verified: bool, signature: bytes
+) -> bytes:
     """
-    Hand-roll `abi.encode(bytes32, uint64, bytes)`.
+    Hand-roll `abi.encode(bytes32, uint64, bool, bytes)`.
 
-    Head:  measurement word, expiry word, offset-to-bytes word (0x60 = 96).
+    Head:  measurement word, expiry word, hardwareVerified word, offset-to-bytes
+           word. The offset is 0x80 = 128, not 96: it counts from the start of
+           the head, and the head is now four words rather than three.
     Tail:  signature length word, then the signature right-padded to a
            multiple of 32.
     """
-    head = _word(measurement) + _word(expiry.to_bytes(8, "big")) + _word((96).to_bytes(32, "big"))
+    head = (
+        _word(measurement)
+        + _word(expiry.to_bytes(8, "big"))
+        + _word(bytes([1 if hardware_verified else 0]))
+        + _word((128).to_bytes(32, "big"))
+    )
 
     padding = (-len(signature)) % 32
     tail = _word(len(signature).to_bytes(32, "big")) + signature + b"\x00" * padding
@@ -158,6 +177,7 @@ def sign_attestation(
     chain_id: int,
     verifier: str,
     validity_seconds: int = DEFAULT_VALIDITY_SECONDS,
+    hardware_verified: bool = False,
 ) -> SignedAttestation:
     """Sign a verified attestation for on-chain submission."""
     if len(decision_hash) != 32:
@@ -168,7 +188,9 @@ def sign_attestation(
     account = load_oracle_account()
     expiry = int(time.time()) + validity_seconds
 
-    digest = attestation_digest(chain_id, verifier, decision_hash, measurement, expiry)
+    digest = attestation_digest(
+        chain_id, verifier, decision_hash, measurement, expiry, hardware_verified
+    )
 
     # The digest already carries the EIP-191 envelope, so sign it as raw 32
     # bytes. Passing it through encode_defunct again would wrap it twice and
@@ -194,6 +216,7 @@ def sign_attestation(
         signer=account.address,
         verifier=to_checksum_address(verifier),
         chain_id=chain_id,
+        hardware_verified=hardware_verified,
     )
 
 

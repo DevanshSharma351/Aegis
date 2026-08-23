@@ -32,14 +32,14 @@ import {
 } from "@railgun-community/shared-models";
 
 import { explorerTxUrl, networkConfig, resolveAsset } from "./config";
-import { getUnshieldFeeBasisPoints, poiConfigured } from "./engine";
+import { NETWORK_NAME, getUnshieldFeeBasisPoints, poiConfigured } from "./engine";
 import { createSubmitter, submitWithOptionalFallback } from "./submission";
 import { UniswapV3SwapRecipe } from "./recipes";
 import { quoteExactInputSingle } from "./uniswapV3";
 import { get0zkAddress, getEncryptionKey, getShieldedBalance, getSubmitter, getWalletId } from "./wallet";
 
 const TXID_VERSION = TXIDVersion.V2_PoseidonMerkle;
-const NETWORK = NetworkName.EthereumSepolia;
+const NETWORK = NETWORK_NAME;
 
 export interface SwapParams {
   sellToken: string;

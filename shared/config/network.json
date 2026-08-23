@@ -19,7 +19,7 @@
   },
   "bundler": {
     "apiKeyEnvVar": "PIMLICO_API_KEY",
-    "urlTemplate": "https://api.pimlico.io/v2/11155111/rpc?apikey={key}",
+    "urlTemplate": "https://api.pimlico.io/v2/{chainId}/rpc?apikey={key}",
     "$comment": "Pimlico serves bundler and paymaster on the same endpoint."
   },
   "railgun": {

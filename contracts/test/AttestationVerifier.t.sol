@@ -33,9 +33,20 @@ contract AttestationVerifierTest is Test {
         view
         returns (bytes memory)
     {
-        bytes32 digest = verifier.attestationDigest(decisionHash, measurement, expiry);
+        return _proof(signerPk, decisionHash, measurement, expiry, false);
+    }
+
+    function _proof(
+        uint256 signerPk,
+        bytes32 decisionHash,
+        bytes32 measurement,
+        uint64 expiry,
+        bool hardwareVerified
+    ) internal view returns (bytes memory) {
+        bytes32 digest =
+            verifier.attestationDigest(decisionHash, measurement, hardwareVerified, expiry);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(signerPk, digest);
-        return abi.encode(measurement, expiry, abi.encodePacked(r, s, v));
+        return abi.encode(measurement, expiry, hardwareVerified, abi.encodePacked(r, s, v));
     }
 
     function _validProof() internal view returns (bytes memory) {
@@ -46,14 +57,78 @@ contract AttestationVerifierTest is Test {
     // Happy path
     // -----------------------------------------------------------------------
 
+    /**
+     * The oracle recomputes this digest in Python. Both sides pin the same
+     * literal, so a change to the struct on either side fails here rather than
+     * surfacing in production as an `UnauthorizedSigner` revert naming a
+     * plausible-looking but wrong address.
+     */
+    function test_Typehash_MatchesTheOracleConstant() public view {
+        assertEq(
+            verifier.ATTESTATION_TYPEHASH(),
+            0x7bcf8f7ef22b053c4f3e26cd81c981049db09f6589810db9ad73de6bc68101aa
+        );
+    }
+
     function test_Verify_Success() public view {
-        assertTrue(verifier.verify(DECISION, _validProof()));
+        // verify() reverts on failure and returns how the decision was attested,
+        // so a `false` here is a successful simulator-backed verification -- not
+        // a rejection. Asserting truthiness would silently test the wrong thing.
+        assertFalse(verifier.verify(DECISION, _validProof()), "simulator proof reports false");
+    }
+
+    function test_Verify_ReportsHardwareWhenAttestedOnHardware() public view {
+        bytes memory proof =
+            _proof(oraclePk, DECISION, MEASUREMENT, uint64(block.timestamp + 300), true);
+        assertTrue(verifier.verify(DECISION, proof), "hardware proof reports true");
+    }
+
+    function test_Verify_HardwareFlagIsSignedNotCallerSupplied() public {
+        // Sign for a simulator, then flip the flag in the encoded proof. If the
+        // flag were outside the signed struct this would mint a hardware-backed
+        // decision from a simulator attestation.
+        uint64 expiry = uint64(block.timestamp + 300);
+        bytes32 digest = verifier.attestationDigest(DECISION, MEASUREMENT, false, expiry);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(oraclePk, digest);
+
+        bytes memory forged = abi.encode(MEASUREMENT, expiry, true, abi.encodePacked(r, s, v));
+        vm.expectRevert();
+        verifier.verify(DECISION, forged);
+    }
+
+    function test_Verify_Revert_WhenHardwareRequiredButSimulatorAttested() public {
+        // Built before expectRevert: _validProof calls attestationDigest, and
+        // that external call would otherwise consume the expectation.
+        bytes memory proof = _validProof();
+
+        vm.prank(governance);
+        verifier.setRequireHardware(true);
+
+        vm.expectRevert(AttestationVerifier.HardwareAttestationRequired.selector);
+        verifier.verify(DECISION, proof);
+    }
+
+    function test_Verify_Succeeds_WhenHardwareRequiredAndHardwareAttested() public {
+        vm.prank(governance);
+        verifier.setRequireHardware(true);
+
+        bytes memory proof =
+            _proof(oraclePk, DECISION, MEASUREMENT, uint64(block.timestamp + 300), true);
+        assertTrue(verifier.verify(DECISION, proof));
+    }
+
+    function test_SetRequireHardware_Revert_NotOwner() public {
+        vm.prank(address(0xBEEF));
+        vm.expectRevert(AttestationVerifier.NotOwner.selector);
+        verifier.setRequireHardware(true);
     }
 
     function test_Verify_SucceedsExactlyAtExpiry() public view {
         // `block.timestamp > expiry` is the reject condition, so equality passes.
         bytes memory proof = _proof(oraclePk, DECISION, MEASUREMENT, uint64(block.timestamp));
-        assertTrue(verifier.verify(DECISION, proof));
+        // Does not revert; the returned flag is the attestation source, not a
+        // success signal.
+        verifier.verify(DECISION, proof);
     }
 
     // -----------------------------------------------------------------------
@@ -162,14 +237,17 @@ contract AttestationVerifierTest is Test {
     }
 
     function test_Verify_Revert_SignatureWrongLength() public {
-        bytes memory proof = abi.encode(MEASUREMENT, uint64(block.timestamp + 300), hex"1234");
+        // Well-formed envelope, wrong signature length -- must reach the
+        // signature check rather than tripping the proof-length guard.
+        bytes memory proof =
+            abi.encode(MEASUREMENT, uint64(block.timestamp + 300), false, hex"1234");
         vm.expectRevert(AttestationVerifier.MalformedSignature.selector);
         verifier.verify(DECISION, proof);
     }
 
     function test_Verify_Revert_MalleableSignature() public {
         uint64 expiry = uint64(block.timestamp + 300);
-        bytes32 digest = verifier.attestationDigest(DECISION, MEASUREMENT, expiry);
+        bytes32 digest = verifier.attestationDigest(DECISION, MEASUREMENT, false, expiry);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(oraclePk, digest);
 
         // Flip the signature into its malleable sibling: s' = n - s, v' = v ^ 1.
@@ -177,17 +255,18 @@ contract AttestationVerifierTest is Test {
         bytes32 flippedS = bytes32(n - uint256(s));
         uint8 flippedV = v == 27 ? 28 : 27;
 
-        bytes memory proof = abi.encode(MEASUREMENT, expiry, abi.encodePacked(r, flippedS, flippedV));
+        bytes memory proof =
+            abi.encode(MEASUREMENT, expiry, false, abi.encodePacked(r, flippedS, flippedV));
         vm.expectRevert(AttestationVerifier.MalformedSignature.selector);
         verifier.verify(DECISION, proof);
     }
 
     function test_Verify_Revert_InvalidV() public {
         uint64 expiry = uint64(block.timestamp + 300);
-        bytes32 digest = verifier.attestationDigest(DECISION, MEASUREMENT, expiry);
+        bytes32 digest = verifier.attestationDigest(DECISION, MEASUREMENT, false, expiry);
         (, bytes32 r, bytes32 s) = vm.sign(oraclePk, digest);
 
-        bytes memory proof = abi.encode(MEASUREMENT, expiry, abi.encodePacked(r, s, uint8(1)));
+        bytes memory proof = abi.encode(MEASUREMENT, expiry, false, abi.encodePacked(r, s, uint8(1)));
         vm.expectRevert(AttestationVerifier.MalformedSignature.selector);
         verifier.verify(DECISION, proof);
     }
@@ -218,7 +297,7 @@ contract AttestationVerifierTest is Test {
         verifier.verify(DECISION, staleProof);
 
         bytes memory newProof = _proof(oraclePk, DECISION, next, uint64(block.timestamp + 300));
-        assertTrue(verifier.verify(DECISION, newProof));
+        verifier.verify(DECISION, newProof);
     }
 
     function test_SetExpectedMeasurement_Revert_NotOwner() public {

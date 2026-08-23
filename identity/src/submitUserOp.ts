@@ -53,6 +53,9 @@ function normaliseHex(value: string, name: string, byteLength?: number): Hex {
  */
 const RATE_LIMIT_POLICY_ERROR = "0x3e4983f6";
 
+/** `AttestationVerifier.HardwareAttestationRequired()`. */
+const HARDWARE_REQUIRED_ERROR = "0x939d166b";
+
 /**
  * Translate bundler simulation failures into something a human can act on.
  *
@@ -75,6 +78,16 @@ function explainValidationFailure(error: Error): Error {
         `npx tsx src/approveSessionKey.ts --rotate. Rotation needs the owner because ` +
         `the new permission id requires the owner's enable signature; the identity ` +
         `service cannot do it alone, which is what makes this limit meaningful.`,
+    );
+  }
+
+  if (text.toLowerCase().includes(HARDWARE_REQUIRED_ERROR)) {
+    return new Error(
+      `AttestationVerifier.requireHardware is on, but this decision was attested by a ` +
+        `TDX simulator, so the contract rejected it. Nothing was submitted. This is the ` +
+        `flag working: hardwareVerified is inside the signed struct, so a simulator ` +
+        `attestation cannot be re-encoded to claim hardware. Either run the enclave on ` +
+        `real TDX, or turn the requirement off deliberately with setRequireHardware(false).`,
     );
   }
 

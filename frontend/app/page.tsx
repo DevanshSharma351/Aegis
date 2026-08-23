@@ -10,8 +10,6 @@ import { ActivityLog } from '@/components/sections/ActivityLog';
 import { PrivateSwap } from '@/components/sections/PrivateSwap';
 import { RunAegis } from '@/components/sections/RunAegis';
 import { HeroCTA } from '@/components/hero/HeroCTA';
-import { DepositorView } from '@/components/sections/DepositorView';
-import { AdminConsole } from '@/components/sections/AdminConsole';
 import { DocsSection } from '@/components/sections/DocsSection';
 import { Spotlight } from '@/components/core/spotlight';
 import { useState } from 'react';
@@ -108,15 +106,14 @@ export default function Home() {
           </div>
 
           <div className="relative z-10">
-            {/* Wallet-gated: these are user actions, so they need an account. */}
-            {isConnected ? (
-              <>
-                <DepositorView />
-                <AdminConsole />
-              </>
-            ) : (
-              <div className="py-24 text-center">
-                <p className="text-muted mb-4">Connect a wallet to deposit or manage the agent.</p>
+            {/*
+              RunAegis gates its own buttons on `isConnected`, so the only thing
+              needed here is a prompt when no wallet is attached. Everything
+              below reads public chain state and stays visible either way.
+            */}
+            {!isConnected && (
+              <div className="py-20 text-center">
+                <p className="text-muted mb-3">Connect a wallet to run the agent.</p>
                 <p className="text-sm text-white/40">
                   Verification below is public — no wallet required.
                 </p>

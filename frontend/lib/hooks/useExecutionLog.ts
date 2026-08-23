@@ -34,6 +34,12 @@ export interface ExecutionLogEntry {
   sequence: number;
   txHash: `0x${string}`;
   blockNumber: number;
+  /**
+   * Whether the TDX quote behind this decision had its signature chain verified
+   * against Intel collateral. Recorded by the contract itself, so this is what
+   * the chain says rather than what the frontend was told.
+   */
+  hardwareVerified: boolean;
 }
 
 export interface ExecutionLog {
@@ -46,8 +52,11 @@ export interface ExecutionLog {
   refresh: () => void;
 }
 
+// Must track AegisVault.RebalanceExecuted exactly. A stale signature hashes to
+// a different topic0, so getLogs matches nothing and the log renders empty with
+// no error -- the most confusing possible failure.
 const REBALANCE_EVENT = parseAbiItem(
-  'event RebalanceExecuted(bytes32 indexed decisionHash, uint256 timestamp, uint256 sequence)',
+  'event RebalanceExecuted(bytes32 indexed decisionHash, uint256 timestamp, uint256 sequence, bool hardwareVerified)',
 );
 
 export function useExecutionLog(pollMs = 20_000): ExecutionLog {
@@ -97,6 +106,7 @@ export function useExecutionLog(pollMs = 20_000): ExecutionLog {
             sequence: Number(log.args.sequence as bigint),
             txHash: log.transactionHash as `0x${string}`,
             blockNumber: Number(log.blockNumber),
+            hardwareVerified: Boolean(log.args.hardwareVerified),
           }))
           .sort((a, b) => b.sequence - a.sequence);
 

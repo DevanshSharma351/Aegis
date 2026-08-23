@@ -36,8 +36,49 @@ import { setRailgunFees } from "@railgun-community/cookbook";
 
 import { enginePaths, networkConfig, redact, rpcUrls } from "./config";
 
-export const NETWORK_NAME = NetworkName.EthereumSepolia;
-export const CHAIN = { type: 0, id: 11155111 } as const;
+/**
+ * Railgun network identity, resolved from `network.json` rather than compiled in.
+ *
+ * This used to be `NetworkName.EthereumSepolia` and `{ type: 0, id: 11155111 }`
+ * as literals in three separate files. That made the chain a property of the
+ * build instead of the deployment: pointing the stack at mainnet meant editing
+ * source, which is exactly the kind of change nobody wants to make under
+ * pressure. Resolving it here means one config file decides, and a mismatch is
+ * impossible because every module reads the same export.
+ *
+ * Only chains Railgun actually supports can be named — an unsupported chainId
+ * fails loudly at startup rather than producing a wallet on the wrong network.
+ */
+const RAILGUN_NETWORKS: Record<number, NetworkName> = {
+  1: NetworkName.Ethereum,
+  11155111: NetworkName.EthereumSepolia,
+  137: NetworkName.Polygon,
+  42161: NetworkName.Arbitrum,
+  56: NetworkName.BNBChain,
+};
+
+function resolveNetwork(): { name: NetworkName; chainId: number } {
+  const { chainId, network } = networkConfig();
+  const name = RAILGUN_NETWORKS[chainId];
+
+  if (!name) {
+    throw new Error(
+      `network.json names chainId ${chainId} ("${network}"), which Railgun does not ` +
+        `support in this build. Supported: ${Object.keys(RAILGUN_NETWORKS).join(", ")}. ` +
+        `Refusing to start rather than operate a shielded wallet on the wrong chain.`,
+    );
+  }
+
+  return { name, chainId };
+}
+
+const resolved = resolveNetwork();
+
+export const NETWORK_NAME: NetworkName = resolved.name;
+export const CHAIN = { type: 0, id: resolved.chainId } as const;
+
+/** True when the configured chain is a network with a real MEV builder market. */
+export const HAS_BUILDER_MARKET = resolved.chainId === 1;
 
 let started = false;
 let unshieldFeeBasisPoints: bigint | undefined;

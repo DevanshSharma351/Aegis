@@ -47,9 +47,18 @@ contract AegisVaultTest is Test {
         view
         returns (bytes memory)
     {
-        bytes32 digest = verifier.attestationDigest(decisionHash, measurement, expiry);
+        return _proof(decisionHash, measurement, expiry, false);
+    }
+
+    function _proof(bytes32 decisionHash, bytes32 measurement, uint64 expiry, bool hardwareVerified)
+        internal
+        view
+        returns (bytes memory)
+    {
+        bytes32 digest =
+            verifier.attestationDigest(decisionHash, measurement, hardwareVerified, expiry);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(oraclePk, digest);
-        return abi.encode(measurement, expiry, abi.encodePacked(r, s, v));
+        return abi.encode(measurement, expiry, hardwareVerified, abi.encodePacked(r, s, v));
     }
 
     function _validProof(bytes32 decisionHash) internal view returns (bytes memory) {
@@ -140,7 +149,7 @@ contract AegisVaultTest is Test {
         bytes memory proof = _validProof(decisionHash);
 
         vm.expectEmit(true, false, false, true, address(vault));
-        emit AegisVault.RebalanceExecuted(decisionHash, block.timestamp, 1);
+        emit AegisVault.RebalanceExecuted(decisionHash, block.timestamp, 1, false);
 
         vm.prank(smartAccount);
         vault.rebalance(decisionHash, proof);
@@ -158,7 +167,7 @@ contract AegisVaultTest is Test {
             bytes memory proof = _validProof(decisionHash);
 
             vm.expectEmit(true, false, false, true, address(vault));
-            emit AegisVault.RebalanceExecuted(decisionHash, block.timestamp, i);
+            emit AegisVault.RebalanceExecuted(decisionHash, block.timestamp, i, false);
 
             vm.prank(smartAccount);
             vault.rebalance(decisionHash, proof);

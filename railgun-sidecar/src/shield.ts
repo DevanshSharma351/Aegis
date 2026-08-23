@@ -17,11 +17,12 @@ import { NetworkName, TXIDVersion } from "@railgun-community/shared-models";
 import { keccak256 } from "ethers";
 
 import { explorerTxUrl, networkConfig, resolveAsset } from "./config";
+import { NETWORK_NAME } from "./engine";
 import { ERC20_ABI } from "./uniswapV3";
 import { get0zkAddress, getSubmitter } from "./wallet";
 
 const TXID_VERSION = TXIDVersion.V2_PoseidonMerkle;
-const NETWORK = NetworkName.EthereumSepolia;
+const NETWORK = NETWORK_NAME;
 
 /**
  * Derive the shield private key.

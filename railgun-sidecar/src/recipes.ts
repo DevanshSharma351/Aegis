@@ -42,6 +42,7 @@ import {
 
 import { buildApproveCall, buildSwapCall } from "./uniswapV3";
 import { networkConfig } from "./config";
+import { NETWORK_NAME } from "./engine";
 
 /**
  * Approve the Uniswap router to spend the unshielded token.
@@ -197,9 +198,16 @@ export class UniswapV3SwapRecipe extends Recipe {
   }
 
   protected supportsNetwork(networkName: NetworkName): boolean {
-    // Scoped to Sepolia deliberately: the router address in network.json is
-    // Sepolia's, and Uniswap V3 router addresses differ across chains.
-    return networkName === NetworkName.EthereumSepolia;
+    // The recipe is valid on whatever chain network.json is pointed at, because
+    // the router address it uses is read from that same file. What must not
+    // happen is running it against a *different* network than the one those
+    // addresses describe: Uniswap V3 router addresses differ across chains, and
+    // a mismatch would approve and call a contract that is not the router.
+    //
+    // Comparing against the resolved network is therefore the real check. It
+    // was previously pinned to Sepolia, which made a mainnet deployment a code
+    // change rather than a config one.
+    return networkName === NETWORK_NAME;
   }
 
   protected async getInternalSteps(): Promise<Step[]> {

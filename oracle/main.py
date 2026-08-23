@@ -125,6 +125,10 @@ def attest(request: AttestRequest) -> AttestResponse:
             measurement=result.measurement,
             chain_id=request.chain_id,
             verifier=request.verifier_address,
+            # The verifier's own finding, not the enclave's self-report. This is
+            # the value the chain will enforce against, so it must come from the
+            # step that actually checked the signature chain.
+            hardware_verified=result.hardware_verified,
         )
     except SignerError as exc:
         raise HTTPException(status_code=500, detail="signing failed: " + str(exc))

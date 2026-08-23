@@ -48,7 +48,15 @@ contract AegisVault {
      *      `sequence` is included so a frontend can detect gaps without needing an
      *      archival log range query.
      */
-    event RebalanceExecuted(bytes32 indexed decisionHash, uint256 timestamp, uint256 sequence);
+    /**
+     * @param hardwareVerified Whether the TDX quote behind this decision had its
+     *        signature chain verified against Intel collateral. Emitted so the
+     *        chain records how each decision was attested, rather than leaving an
+     *        observer to infer it from the measurement.
+     */
+    event RebalanceExecuted(
+        bytes32 indexed decisionHash, uint256 timestamp, uint256 sequence, bool hardwareVerified
+    );
 
     event SessionKeyBound(address indexed sessionKey);
 
@@ -154,13 +162,13 @@ contract AegisVault {
 
         // Reverts with a specific error if the proof is expired, names the wrong
         // enclave measurement, or was not signed by the oracle.
-        attestationVerifier.verify(decisionHash, attestationProof);
+        bool hardwareVerified = attestationVerifier.verify(decisionHash, attestationProof);
 
         executedAt[decisionHash] = block.timestamp;
         lastRebalanceAt = block.timestamp;
         uint256 sequence = ++rebalanceCount;
 
-        emit RebalanceExecuted(decisionHash, block.timestamp, sequence);
+        emit RebalanceExecuted(decisionHash, block.timestamp, sequence, hardwareVerified);
     }
 
     // -----------------------------------------------------------------------

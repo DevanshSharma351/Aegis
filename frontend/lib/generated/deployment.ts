@@ -18,11 +18,11 @@ export const BLOCK_EXPLORER = "https://sepolia.etherscan.io" as const;
  * compile target of ES2020+, and this file is consumed by a Next.js app whose
  * tsconfig is not ours to depend on.
  */
-export const DEPLOYED_AT_BLOCK = BigInt("11544948");
+export const DEPLOYED_AT_BLOCK = BigInt("11546925");
 
 export const ADDRESSES = {
-  aegisVault: "0xB7B42f53f69D6a973a34c77EB690a828eb91bCD0",
-  attestationVerifier: "0x17227Df878fDB2D1AdC67891c339E741218161b7",
+  aegisVault: "0xc5B48b4679d3CaF00800B5Ff2e1AeebA7DCe6738",
+  attestationVerifier: "0x183b687848Aa40120414Cc41d616d74C9c922190",
   oracleSigner: "0x0212AdAc560383416B4973Ded96c35Dcb912531A",
   smartAccount: "0x61e7eDBD1C14C7F0B14513958e94d9f58770E662",
   sessionKey: "0x61e7eDBD1C14C7F0B14513958e94d9f58770E662",
@@ -305,6 +305,12 @@ export const AEGIS_VAULT_ABI = [
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
+      },
+      {
+        "name": "hardwareVerified",
+        "type": "bool",
+        "indexed": false,
+        "internalType": "bool"
       }
     ],
     "anonymous": false
@@ -410,6 +416,11 @@ export const ATTESTATION_VERIFIER_ABI = [
         "internalType": "bytes32"
       },
       {
+        "name": "hardwareVerified",
+        "type": "bool",
+        "internalType": "bool"
+      },
+      {
         "name": "expiry",
         "type": "uint64",
         "internalType": "uint64"
@@ -465,12 +476,38 @@ export const ATTESTATION_VERIFIER_ABI = [
   },
   {
     "type": "function",
+    "name": "requireHardware",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "setExpectedMeasurement",
     "inputs": [
       {
         "name": "_measurement",
         "type": "bytes32",
         "internalType": "bytes32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setRequireHardware",
+    "inputs": [
+      {
+        "name": "value",
+        "type": "bool",
+        "internalType": "bool"
       }
     ],
     "outputs": [],
@@ -506,7 +543,7 @@ export const ATTESTATION_VERIFIER_ABI = [
     ],
     "outputs": [
       {
-        "name": "",
+        "name": "hardwareVerified",
         "type": "bool",
         "internalType": "bool"
       }
@@ -552,6 +589,25 @@ export const ATTESTATION_VERIFIER_ABI = [
     "anonymous": false
   },
   {
+    "type": "event",
+    "name": "RequireHardwareUpdated",
+    "inputs": [
+      {
+        "name": "previous",
+        "type": "bool",
+        "indexed": false,
+        "internalType": "bool"
+      },
+      {
+        "name": "current",
+        "type": "bool",
+        "indexed": false,
+        "internalType": "bool"
+      }
+    ],
+    "anonymous": false
+  },
+  {
     "type": "error",
     "name": "AttestationExpired",
     "inputs": [
@@ -566,6 +622,11 @@ export const ATTESTATION_VERIFIER_ABI = [
         "internalType": "uint256"
       }
     ]
+  },
+  {
+    "type": "error",
+    "name": "HardwareAttestationRequired",
+    "inputs": []
   },
   {
     "type": "error",

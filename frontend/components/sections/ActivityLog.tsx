@@ -58,6 +58,19 @@ export function ActivityLog() {
 
   const agentIdle = nextExecutionLabel === 'ready now';
 
+  /**
+   * Show a page at a time rather than the whole history.
+   *
+   * The log only grows, and rendering every entry makes the page longer with
+   * each rebalance until the sections below it are unreachable without a long
+   * scroll. Paging keeps the page a fixed height while still making the entire
+   * history reachable — nothing is hidden, it is just not all at once.
+   */
+  const PAGE = 10;
+  const [visible, setVisible] = React.useState(PAGE);
+  const shown = entries.slice(0, visible);
+  const remaining = entries.length - shown.length;
+
   return (
     <section id="logs" className="w-full max-w-5xl mx-auto py-24 px-6 relative z-10">
       <div className="flex flex-col md:flex-row gap-12">
@@ -148,7 +161,7 @@ export function ActivityLog() {
 
           {!isLoading && entries.length > 0 && (
             <div className="space-y-8 relative before:absolute before:inset-0 before:ml-5 before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-px before:bg-gradient-to-b before:from-transparent before:via-white/15 before:to-transparent z-10">
-              {entries.map((log) => (
+              {shown.map((log) => (
                 <div
                   key={`${log.txHash}-${log.sequence}`}
                   className="relative flex items-center justify-between md:justify-normal md:odd:flex-row-reverse group/item is-active"
@@ -169,8 +182,20 @@ export function ActivityLog() {
                           })}
                           <span className="opacity-50"> · {relativeTime(log.timestamp)}</span>
                         </time>
-                        <div className="flex items-center gap-1.5 text-[10px] text-shield-green font-mono uppercase tracking-wider bg-shield-green/10 px-2.5 py-1 rounded-md border border-shield-green/20 shrink-0">
-                          <CheckCircle2 className="w-3.5 h-3.5" /> Attested
+                        <div
+                          className={`flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-wider px-2.5 py-1 rounded-md border shrink-0 ${
+                            log.hardwareVerified
+                              ? 'text-shield-green bg-shield-green/10 border-shield-green/20'
+                              : 'text-amber-300/90 bg-amber-400/10 border-amber-400/20'
+                          }`}
+                          title={
+                            log.hardwareVerified
+                              ? 'TDX quote signature chain verified against Intel collateral'
+                              : 'Attested by a TDX simulator — the quote was not checked against Intel collateral'
+                          }
+                        >
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          {log.hardwareVerified ? 'Hardware attested' : 'Simulator attested'}
                         </div>
                       </div>
 
@@ -200,6 +225,29 @@ export function ActivityLog() {
                   </div>
                 </div>
               ))}
+
+              {remaining > 0 && (
+                <div className="relative flex justify-center pt-2">
+                  <button
+                    onClick={() => setVisible((n) => n + PAGE)}
+                    className="relative z-10 flex items-center gap-2 bg-black/70 hover:bg-white/[0.06] border border-white/10 hover:border-white/20 rounded-full px-5 py-2.5 text-[11px] font-mono uppercase tracking-wider text-muted hover:text-white/90 transition-all"
+                  >
+                    Show {Math.min(PAGE, remaining)} more
+                    <span className="opacity-50">({remaining} older)</span>
+                  </button>
+                </div>
+              )}
+
+              {remaining === 0 && entries.length > PAGE && (
+                <div className="relative flex justify-center pt-2">
+                  <button
+                    onClick={() => setVisible(PAGE)}
+                    className="relative z-10 bg-black/70 hover:bg-white/[0.06] border border-white/10 hover:border-white/20 rounded-full px-5 py-2.5 text-[11px] font-mono uppercase tracking-wider text-muted hover:text-white/90 transition-all"
+                  >
+                    Collapse to latest {PAGE}
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>

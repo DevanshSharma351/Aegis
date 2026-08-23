@@ -224,6 +224,48 @@ async def _assert_swap_gas_affordable() -> None:
     )
 
 
+async def _assert_poi_spendable(sell_amount: str) -> None:
+    """Fail up front if the balance is not POI-validated yet.
+
+    Same reasoning as the gas preflight: this is knowable before anything is
+    spent, and the stages in between cost a UserOperation and one of the session
+    key's rate-limited daily slots. A freshly reshielded note is routinely
+    unspendable for a few minutes while the aggregator validates it, so this is
+    the common case rather than an edge one.
+
+    The `poi` stage still performs the same checks when it runs -- this does not
+    replace the gate, it just stops a run that the gate would certainly reject.
+    """
+    async with httpx.AsyncClient(timeout=300) as client:
+        try:
+            health = (await client.get(RAILGUN_SIDECAR_URL + "/health")).json()
+            balances = (await client.get(RAILGUN_SIDECAR_URL + "/balances")).json()
+        except httpx.HTTPError as exc:
+            raise StageFailure("poi", f"POI preflight unreachable: {exc}")
+
+    poi = health.get("poi", {})
+    if poi.get("mode") != "real":
+        raise StageFailure(
+            "poi",
+            f"POI is '{poi.get('mode')}' - {poi.get('note', 'no aggregator configured')}. "
+            f"Nothing was executed.",
+        )
+
+    weth = next((b for b in balances.get("balances", []) if b["symbol"] == "WETH"), None)
+    spendable = int(weth["spendable"]) if weth else 0
+    if spendable >= int(sell_amount):
+        return
+
+    total = int(weth["balance"]) if weth else 0
+    raise StageFailure(
+        "poi",
+        f"Insufficient POI-validated WETH: need {sell_amount}, spendable {spendable} "
+        f"(total shielded {total}). A note becomes spendable once the aggregator "
+        f"validates it, which takes a few minutes after a shield or a reshield. "
+        f"Nothing was executed - retry shortly.",
+    )
+
+
 async def run_pipeline(
     job: PipelineJob,
     sell_amount: str,
@@ -272,6 +314,7 @@ async def run_pipeline(
         # succeeded.
         if not skip_swap:
             await _assert_swap_gas_affordable()
+            await _assert_poi_spendable(sell_amount)
 
         # ---------------------------------------------------------------
         # 1. Market analysis

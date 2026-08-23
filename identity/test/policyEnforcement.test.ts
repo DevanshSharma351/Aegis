@@ -105,11 +105,19 @@ describe("the vault the policy points at", () => {
     expect(event).toBeDefined();
 
     const fields = event.inputs.map((i: any) => i.name).sort();
-    expect(fields).toEqual(["decisionHash", "sequence", "timestamp"]);
+    expect(fields).toEqual(["decisionHash", "hardwareVerified", "sequence", "timestamp"]);
 
-    // No field named or typed like a token amount.
+    // The property that actually matters, asserted against every field rather
+    // than a frozen list: nothing here can describe a position. Pinning the
+    // exact names alone would fail on any additive change while still passing
+    // if someone renamed an amount field to something innocuous.
     for (const input of event.inputs) {
-      expect(input.name.toLowerCase()).not.toMatch(/amount|balance|value|alloc/);
+      expect(input.name.toLowerCase()).not.toMatch(/amount|balance|value|alloc|asset|token|price/);
+      // No numeric field wide enough to be a token amount. bool and bytes32 are
+      // fine; the two uint256s are a unix timestamp and a counter.
+      if (input.type.startsWith("uint")) {
+        expect(["timestamp", "sequence"]).toContain(input.name);
+      }
     }
   });
 });

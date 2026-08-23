@@ -43,6 +43,11 @@
         "internalType": "bytes32"
       },
       {
+        "name": "hardwareVerified",
+        "type": "bool",
+        "internalType": "bool"
+      },
+      {
         "name": "expiry",
         "type": "uint64",
         "internalType": "uint64"
@@ -98,12 +103,38 @@
   },
   {
     "type": "function",
+    "name": "requireHardware",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "setExpectedMeasurement",
     "inputs": [
       {
         "name": "_measurement",
         "type": "bytes32",
         "internalType": "bytes32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setRequireHardware",
+    "inputs": [
+      {
+        "name": "value",
+        "type": "bool",
+        "internalType": "bool"
       }
     ],
     "outputs": [],
@@ -139,7 +170,7 @@
     ],
     "outputs": [
       {
-        "name": "",
+        "name": "hardwareVerified",
         "type": "bool",
         "internalType": "bool"
       }
@@ -185,6 +216,25 @@
     "anonymous": false
   },
   {
+    "type": "event",
+    "name": "RequireHardwareUpdated",
+    "inputs": [
+      {
+        "name": "previous",
+        "type": "bool",
+        "indexed": false,
+        "internalType": "bool"
+      },
+      {
+        "name": "current",
+        "type": "bool",
+        "indexed": false,
+        "internalType": "bool"
+      }
+    ],
+    "anonymous": false
+  },
+  {
     "type": "error",
     "name": "AttestationExpired",
     "inputs": [
@@ -199,6 +249,11 @@
         "internalType": "uint256"
       }
     ]
+  },
+  {
+    "type": "error",
+    "name": "HardwareAttestationRequired",
+    "inputs": []
   },
   {
     "type": "error",
