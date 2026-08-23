@@ -42,7 +42,9 @@ tests/node_modules/
 # left untracked to avoid committing one deployment's blob into another's tree.
 shared/config/session-key-approval.json
 
-# Editor / agent tooling — local to a machine, not part of the project
-.claude/
+# Editor and IDE settings — local to a machine, not part of the project
 .vscode/
 .idea/
+
+# Auto-generated tooling instructions, rewritten by `next dev` on each run
+frontend/AGENTS.md
