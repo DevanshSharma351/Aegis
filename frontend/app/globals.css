@@ -35,14 +35,24 @@
    * the BorderTrail glows, so defining it here makes the rest of the UI agree
    * with the parts that were using inline styles.
    */
-  --color-accent: #6366f1;
+  /*
+   * Accent and info are neutral by design. Defining them as indigo and sky
+   * turned ~40 previously-uncoloured text elements blue at once, which read as
+   * a different product from the rest of the page -- the page is white on
+   * black, and the accents are meant to add emphasis, not a second hue.
+   *
+   * They stay separate tokens rather than collapsing into `text` and `muted`
+   * so the emphasis levels remain nameable: accent is brighter than body text,
+   * info is quieter.
+   */
+  --color-accent: #e8e8ea;
   --color-shield-green: #34d399;
 
   /* For states that are correct and deliberate but not the maximal case -- a
    * simulator attestation, a public route on a chain with no builders. Those
    * are disclosures, not faults, and colouring them amber told the reader
    * something was broken when nothing was. */
-  --color-info: #38bdf8;
+  --color-info: #a8a8ad;
 
   --font-sans: var(--font-inter), "Segoe UI", system-ui, sans-serif;
   --font-display: "BubbledotICG-FinePos", "Geist Pixel Circle", monospace;

@@ -10,7 +10,7 @@ export function CTA() {
     >
       <a
         href="#attestation"
-        className="group relative inline-flex items-center gap-2 overflow-hidden rounded-full bg-accent px-6 py-3 text-sm font-medium text-white transition-all duration-300 hover:shadow-[0_0_32px_rgba(99,102,241,0.4)]"
+        className="group relative inline-flex items-center gap-2 overflow-hidden rounded-full bg-accent px-6 py-3 text-sm font-medium text-white transition-all duration-300 hover:shadow-[0_0_32px_rgba(255,255,255,0.4)]"
       >
         {/* Animated shimmer overlay */}
         <span className="absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-white/20 to-transparent transition-transform duration-700 group-hover:translate-x-full" />

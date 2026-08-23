@@ -30,10 +30,10 @@ export function DocsSection() {
         </div>
 
         {/* Step 2 */}
-        <div className="glass-light p-8 rounded-3xl anim flex flex-col md:flex-row gap-6 items-start relative overflow-hidden group hover:border-white/20 transition-all duration-500 hover:shadow-[0_0_40px_rgba(99,102,241,0.05)]" style={{ '--d': '0.3s' } as React.CSSProperties}>
+        <div className="glass-light p-8 rounded-3xl anim flex flex-col md:flex-row gap-6 items-start relative overflow-hidden group hover:border-white/20 transition-all duration-500 hover:shadow-[0_0_40px_rgba(255,255,255,0.05)]" style={{ '--d': '0.3s' } as React.CSSProperties}>
           <div className="absolute top-0 right-0 w-64 h-64 bg-accent/5 rounded-full blur-3xl -mr-20 -mt-20 pointer-events-none transition-opacity opacity-50 group-hover:opacity-100"></div>
 
-          <div className="w-14 h-14 rounded-2xl bg-accent/10 flex items-center justify-center border border-accent/20 shrink-0 shadow-[0_0_15px_rgba(99,102,241,0.15)] relative z-10">
+          <div className="w-14 h-14 rounded-2xl bg-accent/10 flex items-center justify-center border border-accent/20 shrink-0 shadow-[0_0_15px_rgba(255,255,255,0.15)] relative z-10">
             <ShieldCheck className="text-accent w-7 h-7" />
           </div>
           <div className="relative z-10">

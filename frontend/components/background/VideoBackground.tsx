@@ -73,7 +73,7 @@ export function VideoBackground() {
           '--mx': '50%',
           '--my': '50%',
           background:
-            'radial-gradient(600px circle at var(--mx) var(--my), rgba(99, 102, 241, 0.07), transparent 70%)',
+            'radial-gradient(600px circle at var(--mx) var(--my), rgba(255,255,255, 0.07), transparent 70%)',
         } as React.CSSProperties}
       />
 

@@ -113,7 +113,7 @@ export function PrivateSwap() {
           className="glass-light p-8 rounded-3xl anim flex flex-col gap-6 relative overflow-hidden"
           style={{ '--d': '0.2s' } as React.CSSProperties}
         >
-          <BorderTrail size={180} className="bg-accent/50" style={{ boxShadow: '0 0 40px 10px rgba(99,102,241,0.3)' }} />
+          <BorderTrail size={180} className="bg-accent/50" style={{ boxShadow: '0 0 40px 10px rgba(255,255,255,0.3)' }} />
 
           <div className="flex items-center justify-between relative z-10">
             <h3 className="font-display tracking-wide text-lg text-white/90">Shielded Position</h3>

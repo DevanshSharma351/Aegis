@@ -217,7 +217,7 @@ export function TrustCenter() {
           <BorderTrail
             size={180}
             className="bg-accent/50"
-            style={{ boxShadow: '0 0 40px 10px rgba(99,102,241,0.3)' }}
+            style={{ boxShadow: '0 0 40px 10px rgba(255,255,255,0.3)' }}
           />
 
           <div className="flex items-center gap-4 relative z-10">

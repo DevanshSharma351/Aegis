@@ -93,7 +93,7 @@ export function RunAegis({ isConnected }: { isConnected: boolean }) {
           className="glass-light p-8 rounded-3xl anim flex flex-col gap-5 relative overflow-hidden"
           style={{ '--d': '0.2s' } as React.CSSProperties}
         >
-          <BorderTrail size={180} className="bg-accent/50" style={{ boxShadow: '0 0 40px 10px rgba(99,102,241,0.3)' }} />
+          <BorderTrail size={180} className="bg-accent/50" style={{ boxShadow: '0 0 40px 10px rgba(255,255,255,0.3)' }} />
 
           <div className="flex items-center gap-4 relative z-10">
             <div className="w-12 h-12 rounded-2xl bg-accent/10 flex items-center justify-center border border-accent/20">

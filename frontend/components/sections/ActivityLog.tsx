@@ -44,19 +44,52 @@ export function ActivityLog() {
     return () => clearInterval(timer);
   }, []);
 
-  const nextExecutionLabel = React.useMemo(() => {
-    if (policy.isLoading || isLoading) return '…';
-    if (!lastRebalanceAt) return 'ready now';
+  /**
+   * When the session key can next execute, and how much of its allowance is left.
+   *
+   * The policy permits N executions per interval, not one. This previously read
+   * `lastRebalanceAt + interval`, which is only correct when N is 1 — after the
+   * limit moved to 10/day it reported "rate-limited, 23h 28m" while eight
+   * executions were still available, so the dashboard claimed the agent was
+   * blocked when it was not.
+   *
+   * The window is measured from the events themselves rather than from the
+   * vault's `lastRebalanceAt`, because only the events say *how many* landed
+   * inside it. Once the allowance is spent, the wait is until the oldest
+   * execution in the window ages out — that is the moment a slot frees.
+   */
+  const rateLimit = React.useMemo(() => {
+    if (policy.isLoading || isLoading) return { label: '…', idle: false, used: null as number | null };
 
-    const remaining = lastRebalanceAt + policy.rateLimitIntervalSeconds - nowSeconds;
-    if (remaining <= 0) return 'ready now';
+    const windowStart = nowSeconds - policy.rateLimitIntervalSeconds;
+    const inWindow = entries
+      .map((e) => e.timestamp)
+      .filter((t) => t > windowStart)
+      .sort((a, b) => a - b);
 
-    const hours = Math.floor(remaining / 3600);
-    const minutes = Math.floor((remaining % 3600) / 60);
-    return `${hours}h ${String(minutes).padStart(2, '0')}m`;
-  }, [policy.isLoading, policy.rateLimitIntervalSeconds, isLoading, lastRebalanceAt, nowSeconds]);
+    const used = inWindow.length;
+    if (used < policy.maxExecutionsPerDay) {
+      return { label: 'ready now', idle: true, used };
+    }
 
-  const agentIdle = nextExecutionLabel === 'ready now';
+    const oldest = inWindow[0];
+    const wait = oldest + policy.rateLimitIntervalSeconds - nowSeconds;
+    if (wait <= 0) return { label: 'ready now', idle: true, used };
+
+    const hours = Math.floor(wait / 3600);
+    const minutes = Math.floor((wait % 3600) / 60);
+    return { label: `${hours}h ${String(minutes).padStart(2, '0')}m`, idle: false, used };
+  }, [
+    policy.isLoading,
+    policy.rateLimitIntervalSeconds,
+    policy.maxExecutionsPerDay,
+    isLoading,
+    entries,
+    nowSeconds,
+  ]);
+
+  const nextExecutionLabel = rateLimit.label;
+  const agentIdle = rateLimit.idle;
 
   /**
    * Show a page at a time rather than the whole history.
@@ -89,11 +122,11 @@ export function ActivityLog() {
             </p>
           </div>
 
-          <div className="glass-light p-8 rounded-3xl flex flex-col gap-5 border-l-4 border-l-accent relative overflow-hidden group hover:shadow-[0_0_40px_rgba(99,102,241,0.05)] transition-shadow duration-500">
+          <div className="glass-light p-8 rounded-3xl flex flex-col gap-5 border-l-4 border-l-accent relative overflow-hidden group hover:shadow-[0_0_40px_rgba(255,255,255,0.05)] transition-shadow duration-500">
             <BorderTrail
               size={180}
               className="bg-accent/50"
-              style={{ boxShadow: '0 0 40px 10px rgba(99,102,241,0.3)' }}
+              style={{ boxShadow: '0 0 40px 10px rgba(255,255,255,0.3)' }}
             />
             <div className="flex items-center gap-4 relative z-10">
               <div className="relative">
@@ -119,6 +152,18 @@ export function ActivityLog() {
               Rebalances recorded:{' '}
               <span className="text-white/90">{rebalanceCount ?? '…'}</span>
             </div>
+
+            {/* "Ready" alone does not say how much allowance is left, which is
+                the number that decides whether the next run will be refused. */}
+            {rateLimit.used !== null && (
+              <div className="text-[13px] text-muted relative z-10 font-mono uppercase tracking-wider mt-1">
+                Allowance used:{' '}
+                <span className="text-white/90">
+                  {rateLimit.used} / {policy.maxExecutionsPerDay}
+                </span>{' '}
+                in the last {Math.round(policy.rateLimitIntervalSeconds / 3600)}h
+              </div>
+            )}
           </div>
         </div>
 
