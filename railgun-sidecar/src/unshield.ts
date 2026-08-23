@@ -25,7 +25,13 @@ import { RailgunERC20AmountRecipient, TXIDVersion } from "@railgun-community/sha
 import { explorerTxUrl, resolveAsset } from "./config";
 import { NETWORK_NAME, poiConfigured } from "./engine";
 import { createSubmitter, submitWithOptionalFallback } from "./submission";
-import { getEncryptionKey, getShieldedBalance, getSubmitter, getWalletId } from "./wallet";
+import {
+  getEncryptionKey,
+  getShieldedBalance,
+  getSubmitter,
+  getWalletId,
+  scanBalances,
+} from "./wallet";
 
 const TXID_VERSION = TXIDVersion.V2_PoseidonMerkle;
 const NETWORK = NETWORK_NAME;
@@ -47,13 +53,6 @@ export interface UnshieldResult {
   submission: { mode: string; route: string; mempoolExposed: boolean };
 }
 
-/**
- * Unshield `amount` of a token to a public address.
- *
- * The recipient is an ordinary EVM address and is public: an unshield is
- * visible on-chain as a withdrawal to that address. What stays private is the
- * history of the note being spent, which is the whole point of the pool.
- */
 /** ERC-20 `Transfer(address,address,uint256)`. */
 const TRANSFER_TOPIC =
   "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
@@ -80,6 +79,46 @@ function erc20AmountReceived(
   }, 0n);
 }
 
+/**
+ * Turn a stale-engine revert into something a caller can act on.
+ *
+ * The engine's view of the commitment tree trails the chain by roughly 30-60s
+ * after any spend. Inside that window `/balances` still reports the pre-spend
+ * figure, and the next spend selects a note that is already consumed -- which
+ * surfaces from eth_estimateGas as `RailgunLogic: Note already spent`, a
+ * message that reads like corruption when the real answer is "wait a moment".
+ *
+ * Measured: a 20 USDC unshield left the reported balance unchanged at 30s,
+ * then corrected by exactly the spent amount by 60s.
+ */
+async function withSpentNoteGuard<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    if (/note already spent/i.test((error as Error).message ?? "")) {
+      throw new Error(
+        "The shielded balance is still syncing after a recent spend, so this " +
+          "would have spent a note that is already consumed. Nothing was " +
+          "submitted and no gas was used. The engine catches up within about a " +
+          "minute -- wait and retry. Balances shown before then are pre-spend.",
+      );
+    }
+    throw error;
+  }
+}
+
+/**
+ * Unshield `amount` of a token to a public address.
+ *
+ * The recipient is an ordinary EVM address and is public: an unshield is
+ * visible on-chain as a withdrawal to that address. What stays private is the
+ * history of the note being spent, which is the whole point of the pool.
+ *
+ * `recipientAddress` is always supplied by the caller and never defaulted here.
+ * The browser passes the connected account, so a withdrawal goes where the
+ * person who asked for it says — this function has no notion of a "default"
+ * wallet to fall back to.
+ */
 export async function unshield(
   tokenReference: string,
   amount: bigint,
@@ -139,19 +178,21 @@ export async function unshield(
   };
 
   console.log(`[railgun] estimating unshield gas for ${amount} ${asset.symbol}`);
-  const { gasEstimate } = await gasEstimateForUnprovenUnshield(
-    TXID_VERSION,
-    NETWORK,
-    walletId,
-    getEncryptionKey(),
-    erc20AmountRecipients,
-    [],
-    originalGasDetails,
-    undefined,
-    // A public EOA broadcasts this rather than a Railgun broadcaster. It pays
-    // gas and learns nothing about the shielded side beyond what the unshield
-    // itself reveals.
-    true,
+  const { gasEstimate } = await withSpentNoteGuard(() =>
+    gasEstimateForUnprovenUnshield(
+      TXID_VERSION,
+      NETWORK,
+      walletId,
+      getEncryptionKey(),
+      erc20AmountRecipients,
+      [],
+      originalGasDetails,
+      undefined,
+      // A public EOA broadcasts this rather than a Railgun broadcaster. It pays
+      // gas and learns nothing about the shielded side beyond what the unshield
+      // itself reveals.
+      true,
+    ),
   );
 
   console.log("[railgun] generating unshield proof (typically 1-3 minutes)");
@@ -202,11 +243,15 @@ export async function unshield(
     throw new Error(`Unshield transaction ${submission.txHash} reverted`);
   }
 
-  // Report what the recipient actually received rather than what was asked
-  // for. Railgun deducts its unshield fee from the amount, so the two differ
-  // and quoting the request would overstate the payout.
+  // Nudge the engine to re-derive balances rather than waiting for its own
+  // poll, so the reported position reflects this spend sooner. Best effort:
+  // the withdrawal has already landed, and failing to refresh a cache is not a
+  // reason to report a completed transfer as failed.
+  await scanBalances().catch(() => undefined);
+
   // Report what the recipient actually received, read from the token's own
-  // Transfer events in this receipt.
+  // Transfer events in this receipt. Railgun deducts its unshield fee from the
+  // amount, so quoting the request would overstate the payout.
   //
   // Deriving it from a shielded-balance diff instead looked reasonable and was
   // wrong: the engine rescans asynchronously and the spend also creates a
