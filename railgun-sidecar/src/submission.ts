@@ -94,10 +94,21 @@ export class PublicSubmitter implements TransactionSubmitter {
  * unset.
  *
  * TRADE-OFF: inclusion is best-effort. A private transaction is only included
- * if a Flashbots builder wins the block. On Sepolia, builder coverage is far
- * thinner than mainnet, so this can be slower or fail to land — which is why
- * `AEGIS_SUBMISSION_FALLBACK` exists and why the result reports the route that
- * was actually used.
+ * if a Flashbots builder wins the block.
+ *
+ * MEASURED ON SEPOLIA (not inferred): the relay accepts the transaction (HTTP
+ * 200) and it is confirmed absent from the public mempool — so the privacy
+ * property holds — but **no builder includes it**. A 0-value self-transfer sent
+ * this way was still unmined after 25 blocks / 300s. Sampling 60 consecutive
+ * Sepolia blocks found zero built by an MEV builder: every one was a vanilla
+ * Nethermind/geth/besu/erigon block.
+ *
+ * So on Sepolia this route yields privacy without inclusion, which for a
+ * transaction that must land is not a usable trade. That is a property of the
+ * testnet's builder market, not of this code: the same path on a network with
+ * real builder coverage both hides and lands. `AEGIS_SUBMISSION_FALLBACK`
+ * exists for exactly this gap, and the result always reports the route actually
+ * used so a public transaction is never presented as private.
  */
 export class FlashbotsPrivateSubmitter implements TransactionSubmitter {
   readonly mode = "private" as const;
@@ -139,11 +150,15 @@ export class FlashbotsPrivateSubmitter implements TransactionSubmitter {
       ],
     });
 
-    const { hashMessage, getBytes, keccak256, toUtf8Bytes } = await import("ethers");
-    const signature = await this.identity.signMessage(
-      getBytes(keccak256(toUtf8Bytes(body))),
-    );
-    void hashMessage;
+    // Flashbots signs the keccak of the body **as a hex string**, not as the
+    // 32 raw bytes it encodes. Signing the bytes produces a well-formed
+    // signature over the wrong message, and the relay answers
+    // `-32025 invalid flashbots signature` — which reads like a credentials
+    // problem and is really an encoding one. Verified against the live Sepolia
+    // relay: signing the bytes returns HTTP 403, signing the hex string
+    // returns HTTP 200.
+    const { keccak256, toUtf8Bytes } = await import("ethers");
+    const signature = await this.identity.signMessage(keccak256(toUtf8Bytes(body)));
 
     const response = await fetch(this.relayUrl, {
       method: "POST",
@@ -199,8 +214,10 @@ export class FlashbotsPrivateSubmitter implements TransactionSubmitter {
 
     throw new Error(
       `Private transaction ${txHash} was accepted by the relay but not included within ` +
-        `${timeoutMs / 1000}s. On Sepolia, Flashbots builder coverage is thin; set ` +
-        `AEGIS_SUBMISSION_FALLBACK=true to retry publicly, or resubmit.`,
+        `${timeoutMs / 1000}s. This is the expected outcome on Sepolia, where no MEV ` +
+        `builder is active to include it — the transaction stayed private but cannot ` +
+        `land. Set AEGIS_SUBMISSION_FALLBACK=true to retry publicly (the result will ` +
+        `say so), or use a network with real builder coverage.`,
     );
   }
 }

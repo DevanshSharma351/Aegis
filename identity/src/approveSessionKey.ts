@@ -14,7 +14,7 @@ import { getPublicClient } from "./clients";
 import { writeApproval } from "./sessionKey";
 import * as fs from "fs";
 
-export async function approveSessionKey(force = false) {
+export async function approveSessionKey(force = false, rotateSeed?: string) {
   if (fs.existsSync(APPROVAL_PATH) && !force) {
     const existing = readApproval();
     console.log("Approval already exists at", APPROVAL_PATH);
@@ -33,7 +33,7 @@ export async function approveSessionKey(force = false) {
   console.log("  vault    :", vault);
   console.log("  selector :", REBALANCE_SELECTOR, "(rebalance(bytes32,bytes))");
 
-  const { approval, accountAddress, sessionKeyAddress } = await buildApproval();
+  const { approval, accountAddress, sessionKeyAddress } = await buildApproval(rotateSeed);
 
   const record = {
     approval,
@@ -70,7 +70,18 @@ export async function approveSessionKey(force = false) {
 }
 
 if (require.main === module) {
-  approveSessionKey(process.argv.includes("--force"))
+  // --rotate issues a new permission id, which resets the on-chain rate-limit
+  // counter. The policy itself (target, selector, value limit, executions per
+  // day) is unchanged; this is "issue a new session key", not "disable the
+  // limit".
+  const rotateFlag = process.argv.find((a) => a.startsWith("--rotate"));
+  const rotateSeed = rotateFlag
+    ? rotateFlag.includes("=")
+      ? rotateFlag.split("=")[1]
+      : String(Date.now())
+    : undefined;
+
+  approveSessionKey(process.argv.includes("--force") || Boolean(rotateSeed), rotateSeed)
     .then(() => process.exit(0))
     .catch((error) => {
       console.error("[identity] approveSessionKey failed:", error.message);

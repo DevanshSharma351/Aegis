@@ -31,6 +31,7 @@ from attestation import attestation_source, attest_decision, get_enclave_identit
 from quant.data_feed import DataFeedError, fetch_all_assets
 from quant.model import SLMError, query_slm
 from quant.signal import compute_all_signals
+from pipeline import get_job, start_pipeline
 
 app = FastAPI(
     title="Aegis Enclave",
@@ -249,6 +250,25 @@ async def railgun_balances() -> dict[str, Any]:
         raise HTTPException(status_code=503, detail="Railgun sidecar unreachable: " + str(exc))
 
 
+@app.get("/railgun/gas-preflight")
+async def railgun_gas_preflight() -> dict[str, Any]:
+    """
+    Can the public submitter afford a private swap right now?
+
+    Read-only. The pipeline consults this before stage 1 so a shortfall stops a
+    run before it spends a UserOperation and a rate-limited session-key slot;
+    exposing it here lets the UI show the same answer without starting a run.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.get(RAILGUN_SIDECAR_URL + "/gas-preflight")
+        if response.status_code != 200:
+            raise HTTPException(status_code=response.status_code, detail=response.text[:400])
+        return response.json()
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="Railgun sidecar unreachable: " + str(exc))
+
+
 @app.post("/railgun/private-swap")
 async def private_swap(request: PrivateSwapRequest) -> dict[str, Any]:
     """
@@ -277,6 +297,91 @@ async def private_swap(request: PrivateSwapRequest) -> dict[str, Any]:
         )
 
     return body
+
+
+class ShieldRequest(BaseModel):
+    token: str = Field(default="WETH", description="Whitelisted symbol or address")
+    amount: str = Field(description="Base-unit integer, as a string")
+
+
+@app.post("/railgun/shield")
+async def railgun_shield(request: ShieldRequest) -> dict[str, Any]:
+    """
+    Shield an ERC-20 into the 0zk wallet.
+
+    The one capability that previously had no programmatic path — it could only
+    be driven by hand with `docker compose exec`. Proxied rather than
+    reimplemented: the sidecar approves the Railgun proxy, derives the shield
+    private key from a signature, and submits. This adds the network boundary
+    and nothing else.
+
+    Returns only after the transaction is mined, so the hash it reports is
+    always backed by a receipt.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=600) as client:
+            response = await client.post(
+                RAILGUN_SIDECAR_URL + "/shield", json=request.model_dump()
+            )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="Railgun sidecar unreachable: " + str(exc))
+
+    body = response.json()
+    if response.status_code != 200 or not body.get("success"):
+        raise HTTPException(
+            status_code=response.status_code if response.status_code != 200 else 500,
+            detail=body.get("error", "shield failed"),
+        )
+    return body
+
+
+# ---------------------------------------------------------------------------
+# Full pipeline
+# ---------------------------------------------------------------------------
+
+
+class PipelineRunRequest(BaseModel):
+    sellAmount: str = Field(description="WETH to swap, base-unit integer as a string")
+    slippageBps: int = Field(default=150, ge=1, le=1000)
+    skipSwap: bool = Field(default=False, description="Stop after the on-chain attestation")
+
+
+@app.post("/pipeline/run")
+async def pipeline_run(request: PipelineRunRequest) -> dict[str, Any]:
+    """
+    Start the full Aegis sequence and return a job id immediately.
+
+    Asynchronous by design: the run takes minutes (SLM inference, a Groth16
+    proof, two on-chain confirmations). Holding a request open for that long
+    would make any network blip look like a failed trade, and would give the
+    caller no visibility into which stage was in flight.
+
+    Poll GET /pipeline/{jobId} for real per-stage state.
+    """
+    try:
+        job = await start_pipeline(
+            sell_amount=request.sellAmount,
+            slippage_bps=request.slippageBps,
+            skip_swap=request.skipSwap,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+    return job.as_dict()
+
+
+@app.get("/pipeline/{job_id}")
+async def pipeline_status(job_id: str) -> dict[str, Any]:
+    """
+    Real state of a pipeline run.
+
+    Every stage advances only when its underlying call returns. A failed run
+    leaves downstream stages `pending` rather than marking them succeeded.
+    """
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"No pipeline job {job_id}")
+    return job.as_dict()
 
 
 if __name__ == "__main__":

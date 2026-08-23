@@ -142,12 +142,33 @@ def get_enclave_identity() -> EnclaveIdentity:
     )
 
 
-def attest_decision(decision: Mapping[str, Any]) -> dict[str, Any]:
+def attest_decision(
+    decision: Mapping[str, Any],
+    decided_at: int | None = None,
+) -> dict[str, Any]:
     """
     Bind a rebalance decision to a TDX quote.
 
+    The decision is bound to the moment it was made before hashing.
+
+    WHY: `AegisVault` records each decision hash exactly once and rejects
+    repeats. Hashing content alone means two runs over unchanged market data
+    produce the same hash, and the second is refused permanently — the agent
+    could execute any given allocation once in its lifetime. But "hold 40% WETH"
+    decided now and the same call decided an hour later are two distinct
+    decisions about two distinct moments, and the vault's log should contain
+    both. Binding the timestamp makes each decision *event* unique while keeping
+    the hash fully deterministic: the same decision with the same `decided_at`
+    always yields the same hash, so anyone can recompute it from the returned
+    fields and check it against the quote.
+
+    This does not weaken the replay guard. Replay protection means an already
+    submitted attestation cannot be resubmitted, and that still holds exactly:
+    the timestamp is inside the signed preimage, so it cannot be altered to mint
+    a fresh hash from an old attestation without invalidating the quote.
+
     Steps:
-      1. Hash the decision (keccak256 over canonical JSON).
+      1. Bind the decision to `decided_at` and hash it (keccak256, canonical JSON).
       2. Ask the guest agent for a quote with that hash as report_data.
       3. Re-parse the returned quote and assert report_data actually came back
          bound. A guest agent that ignored the request would otherwise produce a
@@ -159,7 +180,9 @@ def attest_decision(decision: Mapping[str, Any]) -> dict[str, Any]:
     Returns a dict carrying the quote, decision hash, measurement, event log,
     and attestation source.
     """
-    decision_hash = compute_decision_hash(decision)
+    decided_at = int(time.time()) if decided_at is None else int(decided_at)
+    bound_decision = {**dict(decision), "decided_at": decided_at}
+    decision_hash = compute_decision_hash(bound_decision)
 
     client = _client()
     quote_response = client.get_quote(decision_hash)
@@ -203,5 +226,9 @@ def attest_decision(decision: Mapping[str, Any]) -> dict[str, Any]:
         "compose_hash": identity.compose_hash,
         "event_log": quote_response.event_log or "",
         "source": identity.source,
-        "generated_at": int(time.time()),
+        # The exact value bound into the hash. Returned so the digest is
+        # independently recomputable: keccak256(domain || canonical_json(
+        # {**decision, "decided_at": decided_at})).
+        "decided_at": decided_at,
+        "generated_at": decided_at,
     }

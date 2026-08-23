@@ -113,3 +113,62 @@ behind the trade is not revealed or linkable to previous or future operations.
 Claiming "amounts are hidden" for a RelayAdapt cross-contract call would be
 false: the DEX leg is a public swap by construction. The privacy property is
 ownership unlinkability, not amount concealment.
+
+## Measured, not assumed (Sepolia)
+
+Everything below was tested against the live network rather than inferred from
+documentation.
+
+**The Flashbots signature was encoded wrong.** Flashbots signs the keccak of the
+request body *as a hex string*; this code signed the 32 raw bytes it encodes.
+That produces a valid signature over the wrong message, and the relay answers
+`-32025 invalid flashbots signature` — which reads like a credentials problem
+and is really an encoding one. Private submission could never have worked. Fixed
+and verified: signing the bytes returns HTTP 403, signing the hex string returns
+HTTP 200.
+
+**Private submission is private on Sepolia, but does not land.** With the
+signature fixed, `rpc-sepolia.flashbots.net` accepts the transaction and it is
+confirmed absent from the public mempool. No builder ever includes it: a 0-value
+self-transfer sent this way was still unmined after 25 blocks / 300s.
+
+**Because Sepolia has no MEV builders.** Sampling 60 consecutive blocks: zero
+built by an MEV builder. Every one was vanilla `Nethermind`, `geth`, `besu` or
+`erigon`.
+
+**And therefore no searchers.** Checking our own executed swaps: each was the
+only swap on its Uniswap pool in its block. Nothing was sandwiched, because
+there is nothing on Sepolia to sandwich it.
+
+The conclusion is not "MEV protection is unnecessary" — it is that on this
+network private submission trades inclusion for a privacy nobody is attacking.
+The same code path on a network with real builder coverage both hides and lands,
+which is why the route stays behind configuration rather than being deleted.
+
+## What actually bounds the risk
+
+Three controls, two of them unconditional:
+
+| Control | Active | What it removes |
+|---|---|---|
+| Atomic RelayAdapt | always | Interleaving. Unshield, swap and reshield are one transaction; nothing can be placed between the legs. |
+| On-chain slippage floor | always | Extractable value. Uniswap reverts below `amountOutMinimum`; the pool enforces it, not us. |
+| Private submission | configurable | Mempool visibility. Effective where builders exist; on Sepolia it costs inclusion. |
+
+Atomicity is not invisibility, and this file has never claimed otherwise. A
+public RelayAdapt call is observable and its swap leg is sandwichable in
+principle; the floor caps what that is worth.
+
+## Reporting the outcome instead of asserting protection
+
+"Protected from MEV" is not observable. What a receipt *can* show is measured
+after every swap and returned in `execution`:
+
+- `actualBuyAmount` — read from the pool's own Swap event, not the pre-trade quote
+- `versusQuoteBps` — realised execution against the quote; negative is the direction a sandwich moves it
+- `slippageBudgetUsedPercent` — how much of the floor's headroom was consumed
+- `otherSwapsOnPoolInBlock` — zero is positive evidence no sandwich was possible
+- `sandwichPatternObserved` — true only when another party traded the same pool **both** before and after ours in the same block
+
+The last one is deliberately strict. "Someone else traded this pool" is ordinary
+contention, not an attack, and reporting it as one would cry wolf.

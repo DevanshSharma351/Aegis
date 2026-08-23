@@ -17,7 +17,7 @@
  * EOA to broadcast a transaction spending shielded funds it cannot see.
  */
 
-import { ContractTransactionReceipt, TransactionRequest } from "ethers";
+import { ContractTransactionReceipt, TransactionRequest, Wallet } from "ethers";
 import {
   gasEstimateForUnprovenCrossContractCalls,
   generateCrossContractCallsProof,
@@ -71,6 +71,114 @@ export interface SwapResult {
     mode: "public" | "private";
     route: string;
     mempoolExposed: boolean;
+  };
+  /**
+   * What the execution actually looked like once mined.
+   *
+   * Whether a swap was sandwiched is not something a submission route can
+   * assert — it is something the receipt can show. These fields are measured
+   * from the mined block, not claimed.
+   */
+  execution: {
+    /** Tokens actually received, read from the pool's own Swap event. */
+    actualBuyAmount: string;
+    /**
+     * Realised execution against the pre-trade quote, in basis points.
+     * Negative means worse than quoted, which is the direction a sandwich
+     * moves it. Small negatives are ordinary drift between quote and block.
+     */
+    versusQuoteBps: number;
+    /** How much of the slippage budget the realised price consumed, 0-100. */
+    slippageBudgetUsedPercent: number;
+    /**
+     * Other swaps on the same pool in the same block. A sandwich requires at
+     * least one before and one after ours, so zero is positive evidence that
+     * no sandwich occurred — the strongest statement available from a receipt.
+     */
+    otherSwapsOnPoolInBlock: number;
+    /** True only when the shape of a sandwich is actually present. */
+    sandwichPatternObserved: boolean;
+  };
+}
+
+/** Uniswap V3 `Swap(address,address,int256,int256,uint160,uint128,int24)`. */
+const UNISWAP_V3_SWAP_TOPIC =
+  "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67";
+
+/**
+ * Measure what the swap actually got, from the mined block.
+ *
+ * This deliberately reports evidence rather than a verdict. "Protected from
+ * MEV" is not observable; "received X against a quote of Y, and no other
+ * transaction touched this pool in this block" is. A demo that measures the
+ * second is honest whether or not the first is true.
+ */
+async function measureExecution(
+  provider: NonNullable<Wallet["provider"]>,
+  receipt: ContractTransactionReceipt,
+  quotedOut: bigint,
+  minimumOut: bigint,
+) {
+  // Our own Swap event identifies the pool, so the pool address is never
+  // assumed — a different fee tier changes it.
+  const ourSwapLog = receipt.logs.find((log) => log.topics[0] === UNISWAP_V3_SWAP_TOPIC);
+
+  let actualBuyAmount = quotedOut;
+  let poolAddress: string | null = null;
+
+  if (ourSwapLog) {
+    poolAddress = ourSwapLog.address;
+    // amount0 and amount1 are int256, signed from the pool's perspective:
+    // negative is the token leaving the pool, i.e. what we received.
+    const amount0 = BigInt.asIntN(256, BigInt("0x" + ourSwapLog.data.slice(2, 66)));
+    const amount1 = BigInt.asIntN(256, BigInt("0x" + ourSwapLog.data.slice(66, 130)));
+    const received = amount0 < 0n ? -amount0 : amount1 < 0n ? -amount1 : 0n;
+    if (received > 0n) actualBuyAmount = received;
+  }
+
+  const versusQuoteBps =
+    quotedOut > 0n
+      ? Number(((actualBuyAmount - quotedOut) * 10_000n) / quotedOut)
+      : 0;
+
+  const budget = quotedOut - minimumOut;
+  const consumed = quotedOut - actualBuyAmount;
+  const slippageBudgetUsedPercent =
+    budget > 0n && consumed > 0n
+      ? Math.min(100, Number((consumed * 100n) / budget))
+      : 0;
+
+  let otherSwapsOnPoolInBlock = 0;
+  let sandwichPatternObserved = false;
+
+  if (poolAddress) {
+    const logs = await provider.getLogs({
+      fromBlock: receipt.blockNumber,
+      toBlock: receipt.blockNumber,
+      address: poolAddress,
+      topics: [UNISWAP_V3_SWAP_TOPIC],
+    });
+
+    const others = logs.filter(
+      (log) => log.transactionHash.toLowerCase() !== receipt.hash.toLowerCase(),
+    );
+    otherSwapsOnPoolInBlock = others.length;
+
+    // A sandwich is not merely "someone else traded here". It needs one trade
+    // ordered before ours and another after, in the same block, on the same
+    // pool. Reporting anything looser would cry wolf on ordinary contention.
+    const ourIndex = Number(receipt.index);
+    sandwichPatternObserved =
+      others.some((log) => Number(log.transactionIndex) < ourIndex) &&
+      others.some((log) => Number(log.transactionIndex) > ourIndex);
+  }
+
+  return {
+    actualBuyAmount: actualBuyAmount.toString(),
+    versusQuoteBps,
+    slippageBudgetUsedPercent,
+    otherSwapsOnPoolInBlock,
+    sandwichPatternObserved,
   };
 }
 
@@ -289,7 +397,24 @@ export async function unshieldSwapReshield(params: SwapParams): Promise<SwapResu
     );
   }
 
+  const execution = await measureExecution(
+    submitter.provider!,
+    receipt,
+    quote.amountOut,
+    quote.minimumAmountOut,
+  );
+
+  console.log(
+    `[railgun] execution ${execution.versusQuoteBps >= 0 ? "+" : ""}` +
+      `${execution.versusQuoteBps} bps vs quote, ` +
+      `${execution.slippageBudgetUsedPercent}% of the slippage budget used, ` +
+      `${execution.otherSwapsOnPoolInBlock} other swap(s) on this pool in block ` +
+      `${receipt.blockNumber}` +
+      (execution.sandwichPatternObserved ? " — SANDWICH PATTERN PRESENT" : ""),
+  );
+
   return {
+    execution,
     txHash: receipt.hash,
     blockNumber: receipt.blockNumber,
     gasUsed: receipt.gasUsed.toString(),

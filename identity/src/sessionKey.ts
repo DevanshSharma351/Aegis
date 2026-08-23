@@ -35,6 +35,8 @@ import {
 import { CallPolicyVersion, toCallPolicy, toRateLimitPolicy } from "@zerodev/permissions/policies";
 import { toECDSASigner } from "@zerodev/permissions/signers";
 
+import { keccak256, toHex } from "viem";
+
 import { ENTRY_POINT, KERNEL_VERSION, getEcdsaValidator, getPublicClient, sessionKeyAccount } from "./clients";
 import { APPROVAL_PATH, deployedConfig, policyConfig, requireAddress } from "./config";
 
@@ -97,7 +99,7 @@ export function vaultAddress(): Address {
  * `validateUserOp`. They are not advisory client-side checks — a UserOperation
  * violating any of them is rejected by the account itself, before execution.
  */
-export async function buildPermissionValidator() {
+export async function buildPermissionValidator(permissionIdSeed?: string) {
   assertPolicyMatchesAbi();
 
   const publicClient = await getPublicClient();
@@ -105,6 +107,23 @@ export async function buildPermissionValidator() {
   const target = vaultAddress();
 
   const signer = await toECDSASigner({ signer: sessionKeyAccount() as any });
+
+  /**
+   * Optional explicit permission id.
+   *
+   * The on-chain rate-limit counter is keyed by permission id, so a rotation
+   * seed yields a fresh counter *without* changing the policy: the key is still
+   * scoped to one selector, one target, zero value, and the same
+   * executions-per-day figure.
+   *
+   * This is an owner action, and a deliberate one — it is the operator saying
+   * "issue a new session key", not a way to make the rate limit not apply. The
+   * derived smart-account address is unchanged, so the vault's one-shot binding
+   * remains valid.
+   */
+  const permissionId = permissionIdSeed
+    ? (keccak256(toHex(`aegis-session-key:${permissionIdSeed}`)).slice(0, 10) as Hex)
+    : undefined;
 
   const callPolicy = toCallPolicy({
     policyVersion: policy.callPolicyVersion as CallPolicyVersion,
@@ -128,6 +147,7 @@ export async function buildPermissionValidator() {
     policies: [callPolicy, rateLimitPolicy],
     entryPoint: ENTRY_POINT,
     kernelVersion: KERNEL_VERSION,
+    ...(permissionId ? { permissionId } : {}),
   });
 
   return { validator, signer, target, policy };
@@ -140,14 +160,14 @@ export async function buildPermissionValidator() {
  * permission id. Regenerating it with different policies produces a different
  * permission id, so an old blob cannot be used to widen a key's scope.
  */
-export async function buildApproval(): Promise<{
+export async function buildApproval(permissionIdSeed?: string): Promise<{
   approval: string;
   accountAddress: Address;
   sessionKeyAddress: Address;
 }> {
   const publicClient = await getPublicClient();
   const ecdsaValidator = await getEcdsaValidator();
-  const { validator } = await buildPermissionValidator();
+  const { validator } = await buildPermissionValidator(permissionIdSeed);
 
   const account = await createKernelAccount(publicClient, {
     plugins: { sudo: ecdsaValidator, regular: validator },

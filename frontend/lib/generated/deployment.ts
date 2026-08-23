@@ -61,7 +61,7 @@ export const ASSETS = [
 ] as const;
 
 export const SESSION_KEY_POLICY = {
-  "maxExecutionsPerDay": 1,
+  "maxExecutionsPerDay": 10,
   "rateLimitIntervalSeconds": 86400,
   "valueLimitWei": "0",
   "withdrawalPermissions": "NONE",

@@ -8,6 +8,7 @@ import { DockNav } from '@/components/hero/DockNav';
 import { TrustCenter } from '@/components/sections/TrustCenter';
 import { ActivityLog } from '@/components/sections/ActivityLog';
 import { PrivateSwap } from '@/components/sections/PrivateSwap';
+import { RunAegis } from '@/components/sections/RunAegis';
 import { HeroCTA } from '@/components/hero/HeroCTA';
 import { DepositorView } from '@/components/sections/DepositorView';
 import { AdminConsole } from '@/components/sections/AdminConsole';
@@ -128,6 +129,7 @@ export default function Home() {
               independently. Requiring a wallet connection to see the proofs
               would defeat the point of publishing them.
             */}
+            <RunAegis isConnected={isConnected} />
             <PrivateSwap />
             <TrustCenter />
             <ActivityLog />

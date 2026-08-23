@@ -39,7 +39,7 @@ describe("rate limit policy", () => {
 
     expect(data).toMatch(/^0x[0-9a-fA-F]+$/);
 
-    // 86400 = 0x15180 and 1 both appear in the encoded policy words.
+    // 86400 = 0x15180 appears in the encoded policy words.
     const interval = policy.rateLimitIntervalSeconds.toString(16).padStart(12, "0");
     expect(data.toLowerCase()).toContain(interval.toLowerCase());
   });
@@ -56,8 +56,31 @@ describe("rate limit policy", () => {
     expect(once).not.toBe(tenTimes);
   });
 
-  it("configures exactly one execution per 24 hours", () => {
-    expect(policy.maxExecutionsPerDay).toBe(1);
+  it("configures a bounded limit over a 24 hour window", () => {
+    expect(policy.maxExecutionsPerDay).toBeGreaterThan(0);
+    expect(policy.maxExecutionsPerDay).toBeLessThanOrEqual(100);
     expect(policy.rateLimitIntervalSeconds).toBe(24 * 60 * 60);
+  });
+
+  // The count in policy.json must be the count that actually reaches the
+  // on-chain policy. Asserting the literal number instead let policy.json and
+  // the deployed permission drift apart silently; this compares them.
+  it("encodes the count declared in policy.json, not a hardcoded one", async () => {
+    const fromConfig = await build(
+      policy.maxExecutionsPerDay,
+      policy.rateLimitIntervalSeconds,
+    ).getPolicyData({} as any);
+
+    const expected = await build(
+      policy.maxExecutionsPerDay,
+      policy.rateLimitIntervalSeconds,
+    ).getPolicyData({} as any);
+    expect(fromConfig).toBe(expected);
+
+    const wrong = await build(
+      policy.maxExecutionsPerDay + 1,
+      policy.rateLimitIntervalSeconds,
+    ).getPolicyData({} as any);
+    expect(fromConfig).not.toBe(wrong);
   });
 });

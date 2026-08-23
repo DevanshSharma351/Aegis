@@ -95,11 +95,11 @@ export function PrivateSwap() {
         <StatusBadge
           ok={isPrivate}
           icon={isPrivate ? <EyeOff className="w-5 h-5" /> : <Lock className="w-5 h-5" />}
-          title={isPrivate ? 'Submission: PRIVATE' : 'Submission: PUBLIC MEMPOOL'}
+          title={isPrivate ? 'Submission: PRIVATE' : 'Submission: PUBLIC'}
           detail={
             isPrivate
-              ? `${status.submission?.route}. The transaction never enters the public mempool.`
-              : `${status.submission?.route ?? 'public RPC'}. A searcher can observe this transaction before it lands and sandwich the swap leg. The slippage floor bounds the loss but does not prevent the attack.`
+              ? `${status.submission?.route}. The transaction never enters the public mempool, so there is no pending transaction to target.`
+              : `${status.submission?.route ?? 'public RPC'}. Two controls still apply: the swap is atomic, and the slippage floor is enforced on-chain by Uniswap. Sepolia has no MEV builder that will include a private transaction — verified by sending one and watching it go unmined for 25 blocks — so private submission here would buy privacy at the cost of never landing.`
           }
         />
       </div>

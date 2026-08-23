@@ -8,9 +8,9 @@
 
 import { Hex } from "viem";
 
-import { explorerTxUrl } from "./config";
+import { explorerTxUrl, policyConfig } from "./config";
 import { buildKernelClient } from "./clients";
-import { loadSessionKeyAccount } from "./sessionKey";
+import { loadSessionKeyAccount, readApproval } from "./sessionKey";
 import {
   encodeRebalance,
   extractRebalanceEvents,
@@ -40,6 +40,53 @@ function normaliseHex(value: string, name: string, byteLength?: number): Hex {
     throw new Error(`${name} must be ${byteLength} bytes, got ${(hex.length - 2) / 2}`);
   }
   return hex;
+}
+
+/**
+ * Error selector returned by the ZeroDev rate-limit policy when a permission's
+ * allowance for the current interval is exhausted.
+ *
+ * The bundler surfaces this as `AA23 reverted <selector><word>` inside a viem
+ * error whose printed form is several hundred characters of callData — which is
+ * what reached the UI. The condition is ordinary and expected (the policy is
+ * doing its job), so it deserves a sentence, not a hex dump.
+ */
+const RATE_LIMIT_POLICY_ERROR = "0x3e4983f6";
+
+/**
+ * Translate bundler simulation failures into something a human can act on.
+ *
+ * Only conditions that are *diagnosable from the selector* are rewritten.
+ * Anything else is rethrown untouched: inventing a friendly explanation for an
+ * error we have not identified would be worse than the raw text, because it
+ * would send the reader somewhere confidently wrong.
+ */
+function explainValidationFailure(error: Error): Error {
+  const text = `${error.message}`;
+
+  if (text.includes("AA23") && text.toLowerCase().includes(RATE_LIMIT_POLICY_ERROR)) {
+    const { maxExecutionsPerDay, rateLimitIntervalSeconds } = policyConfig().sessionKeyPolicy;
+    const hours = Math.round(rateLimitIntervalSeconds / 3600);
+    return new Error(
+      `Session-key rate limit reached: the policy permits ${maxExecutionsPerDay} ` +
+        `execution(s) per ${hours}h and the allowance for this window is spent. ` +
+        `Nothing was submitted and no gas was used. Either wait for the window to ` +
+        `roll over, or — with the owner key, on the host — issue a new session key: ` +
+        `npx tsx src/approveSessionKey.ts --rotate. Rotation needs the owner because ` +
+        `the new permission id requires the owner's enable signature; the identity ` +
+        `service cannot do it alone, which is what makes this limit meaningful.`,
+    );
+  }
+
+  if (text.includes("AA21") || text.toLowerCase().includes("does not have sufficient funds")) {
+    return new Error(
+      `Smart account ${readApproval().smartAccount} cannot prefund the UserOperation. ` +
+        `ERC-4337 requires the account to hold gas x maxFeePerGas up front, even though ` +
+        `the unused portion is refunded. Nothing was submitted. Fund the account and retry.`,
+    );
+  }
+
+  return error;
 }
 
 /**
@@ -90,9 +137,14 @@ export async function submitRebalance(
   console.error(`[identity] decisionHash ${decisionHash}`);
   console.error(`[identity] proof        ${(attestationProof.length - 2) / 2} bytes`);
 
-  const userOpHash = await kernelClient.sendUserOperation({
-    callData: await account.encodeCalls([{ to: vault, value: 0n, data: callData }]),
-  });
+  let userOpHash: Hex;
+  try {
+    userOpHash = await kernelClient.sendUserOperation({
+      callData: await account.encodeCalls([{ to: vault, value: 0n, data: callData }]),
+    });
+  } catch (error) {
+    throw explainValidationFailure(error as Error);
+  }
   console.error(`[identity] userOpHash   ${userOpHash}`);
 
   const receipt = await kernelClient.waitForUserOperationReceipt({

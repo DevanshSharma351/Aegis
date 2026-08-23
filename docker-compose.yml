@@ -78,6 +78,10 @@ services:
       OLLAMA_HOST: http://127.0.0.1:11434
       # Reached over the internal network only; the sidecar publishes no port.
       RAILGUN_SIDECAR_URL: http://railgun-sidecar:8080
+      # The pipeline orchestrator sequences these; all internal-network only.
+      AEGIS_ORACLE_URL: http://oracle:8100
+      AEGIS_IDENTITY_URL: http://identity:8200
+      AEGIS_DEPLOYED_PATH: /app/shared/config/deployed.json
       # Browser origins permitted to call the Railgun endpoints. Allow-listed
       # rather than "*" because those endpoints move funds.
       AEGIS_CORS_ORIGINS: ${AEGIS_CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
@@ -85,6 +89,9 @@ services:
       # Read-only: the enclave must not be able to rewrite its own config, and
       # the asset whitelist is baked into the image regardless.
       - dstack-sockets:/var/run/dstack:ro
+      # deployed.json supplies the verifier address and chain id the orchestrator
+      # passes to the oracle. Read-only: only the host deploy script writes it.
+      - ./shared:/app/shared:ro
     ports:
       - "8000:8000"
     networks:

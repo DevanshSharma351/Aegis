@@ -211,9 +211,13 @@ class TestAgainstLiveGuestAgent:
         )
 
     def test_attest_decision_binds_the_decision_hash(self):
+        """report_data must carry the hash of the decision *as bound*, which
+        includes the moment it was decided — see attest_decision for why."""
         result = attestation.attest_decision(SAMPLE_DECISION)
 
-        expected = compute_decision_hash(SAMPLE_DECISION)
+        expected = compute_decision_hash(
+            {**dict(SAMPLE_DECISION), "decided_at": result["decided_at"]}
+        )
         assert result["decision_hash"] == "0x" + expected.hex()
 
         parsed = parse_quote(result["quote"])
@@ -236,6 +240,36 @@ class TestAgainstLiveGuestAgent:
         verify_event_log(result["quote"], result["event_log"])
 
         assert len(json.loads(result["event_log"])) > 0
+
+    def test_identical_decisions_at_different_times_differ(self):
+        """The vault records each hash once. Two runs over unchanged market data
+        must still be two executable decisions, or the agent could act on any
+        given allocation exactly once in its lifetime."""
+        first = attestation.attest_decision(SAMPLE_DECISION, decided_at=1_800_000_000)
+        second = attestation.attest_decision(SAMPLE_DECISION, decided_at=1_800_003_600)
+
+        assert first["decision_hash"] != second["decision_hash"]
+        assert first["decided_at"] != second["decided_at"]
+
+    def test_decision_hash_is_deterministic_for_a_fixed_moment(self):
+        """Binding the time must not make the hash unpredictable: the digest has
+        to stay recomputable by anyone holding the decision and its timestamp."""
+        a = attestation.attest_decision(SAMPLE_DECISION, decided_at=1_800_000_000)
+        b = attestation.attest_decision(SAMPLE_DECISION, decided_at=1_800_000_000)
+
+        assert a["decision_hash"] == b["decision_hash"]
+
+    def test_decision_hash_is_independently_recomputable(self):
+        """The returned fields must be sufficient to re-derive the digest, so the
+        binding is auditable rather than something the enclave merely asserts."""
+        result = attestation.attest_decision(SAMPLE_DECISION, decided_at=1_800_000_000)
+
+        expected = compute_decision_hash(
+            {**dict(SAMPLE_DECISION), "decided_at": result["decided_at"]}
+        )
+
+        assert result["decision_hash"] == "0x" + expected.hex()
+        assert parse_quote(result["quote"]).report_data_32 == expected
 
     def test_different_decisions_produce_different_report_data(self):
         first = attestation.attest_decision(SAMPLE_DECISION)

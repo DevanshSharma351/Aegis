@@ -7,7 +7,7 @@
     "script writes. Duplicating it would let the two drift and scope a key to a stale vault."
   ],
   "sessionKeyPolicy": {
-    "maxExecutionsPerDay": 1,
+    "maxExecutionsPerDay": 10,
     "rateLimitIntervalSeconds": 86400,
     "valueLimitWei": "0",
     "withdrawalPermissions": "NONE",
@@ -28,7 +28,12 @@
       "3. target scoping   - only AegisVault is reachable, and AegisVault declares no",
       "   function that can move a token or ETH (asserted in AegisVault.t.sol).",
       "The rate limit is an availability control rather than a safety one: it bounds how",
-      "often a compromised enclave can write to the log, not what it can take."
+      "often a compromised enclave can write to the log, not what it can take.",
+      "10/day is chosen to allow a working demo session without being decorative. Raising",
+      "or lowering it does not widen or narrow the session key's authority: the three",
+      "constraints above are what prevent fund movement, and they are unchanged. Only the",
+      "owner key can change this, because the new policy yields a new permission id whose",
+      "enable signature the owner must produce."
     ]
   }
 }

@@ -30,6 +30,35 @@ app.use(express.json({ limit: "1mb" }));
 let ready = false;
 let startupError: string | undefined;
 
+/**
+ * Gas the Railgun SDK reserves for a RelayAdapt cross-contract call.
+ *
+ * Taken from observed `gasEstimateForUnprovenCrossContractCalls` output for
+ * an unshield -> Uniswap V3 swap -> reshield recipe. Used only by the
+ * read-only preflight below; the real submission always uses the SDK estimate
+ * for the actual recipe, never this figure.
+ */
+const CROSS_CONTRACT_GAS_LIMIT = 3_360_000n;
+
+/**
+ * Extra margin the preflight demands on top of the current reservation.
+ *
+ * The preflight runs at the start of a pipeline run, but the swap is submitted
+ * several minutes later — after the SLM, the attestation, a UserOperation, and
+ * a Groth16 proof. `maxFeePerGas` is derived from the base fee at each of those
+ * moments, so a balance that clears the bar at t=0 can miss it at submission.
+ *
+ * That is not hypothetical: a run passed this check and then failed at the swap
+ * with "insufficient funds for intrinsic transaction cost" after the base fee
+ * rose ~8% mid-run, having already spent a UserOperation and a rate-limited
+ * session-key slot.
+ *
+ * 25% covers the base-fee drift observed across a run. It makes the preflight
+ * conservative on purpose: a false "insufficient" costs a faucet top-up, while
+ * a false "sufficient" costs the very resources this check exists to protect.
+ */
+const GAS_PREFLIGHT_HEADROOM_PERCENT = 25n;
+
 /** Parse an amount that may arrive as a decimal string, number, or bigint. */
 function parseAmount(value: unknown, field: string): bigint {
   if (typeof value === "bigint") return value;
@@ -103,6 +132,58 @@ app.get("/wallet", async (_req, res) => {
       network: networkConfig().network,
       chainId: networkConfig().chainId,
       whitelistedAssets: assets(),
+    });
+  } catch (error) {
+    res.status(503).json({ error: (error as Error).message });
+  }
+});
+
+/**
+ * Can the submitter actually pay for a private swap right now?
+ *
+ * EIP-1559 requires the sender to hold `gasLimit * maxFeePerGas` up front, not
+ * the gas the transaction ends up using. A RelayAdapt cross-contract call is
+ * quoted by the Railgun SDK at roughly 3.36M gas (Railgun enforces a minimum so
+ * the reshield leg cannot be griefed) while typically consuming ~1.9M, so the
+ * reservation is far larger than the eventual cost and is what actually blocks
+ * a run.
+ *
+ * Discovering that at submission time is expensive: by then the pipeline has
+ * already spent a UserOperation and consumed a rate-limited session-key slot,
+ * and the Groth16 proof took minutes to build. This endpoint is read-only and
+ * lets a caller find out first.
+ *
+ * The gas figure is a representative reservation, not a quote for one specific
+ * swap — the real estimate needs the recipe, which needs the amounts. It is
+ * deliberately the SDK's own upper bound, so a pass here means the real
+ * submission will not fail on funds.
+ */
+app.get("/gas-preflight", async (_req, res) => {
+  try {
+    const submitter = getSubmitter();
+    const provider = submitter.provider!;
+    const [balance, feeData] = await Promise.all([
+      provider.getBalance(submitter.address),
+      provider.getFeeData(),
+    ]);
+
+    // Mirrors swap.ts originalGasDetails exactly, including its fallbacks.
+    const maxFeePerGas = feeData.maxFeePerGas ?? 2_000_000_000n;
+    const reserve = CROSS_CONTRACT_GAS_LIMIT * maxFeePerGas;
+    const required = (reserve * (100n + GAS_PREFLIGHT_HEADROOM_PERCENT)) / 100n;
+    const sufficient = balance >= required;
+
+    res.json({
+      submitterAddress: submitter.address,
+      balanceWei: balance.toString(),
+      baseFeePerGasWei: (feeData.gasPrice ?? 0n).toString(),
+      maxFeePerGasWei: maxFeePerGas.toString(),
+      gasLimit: CROSS_CONTRACT_GAS_LIMIT.toString(),
+      reserveAtCurrentFeeWei: reserve.toString(),
+      headroomPercent: Number(GAS_PREFLIGHT_HEADROOM_PERCENT),
+      requiredReserveWei: required.toString(),
+      sufficient,
+      shortfallWei: sufficient ? "0" : (required - balance).toString(),
     });
   } catch (error) {
     res.status(503).json({ error: (error as Error).message });

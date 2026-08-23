@@ -4,10 +4,83 @@ Produces one attested rebalance decision per request. Runs inside a dstack CVM
 (Intel TDX).
 
 ```
-GET  /health       liveness + attestation-source disclosure
-GET  /measurement  this build's code identity
-POST /rebalance    data -> signals -> SLM -> TDX quote
+GET  /health              liveness + attestation-source disclosure
+GET  /measurement         this build's code identity
+POST /rebalance           data -> signals -> SLM -> TDX quote
+
+POST /pipeline/run        start the full sequence, returns a jobId
+GET  /pipeline/{jobId}    real per-stage state
+
+GET  /railgun/status      sidecar health: POI mode + submission route
+GET  /railgun/balances    shielded balances (total and POI-spendable)
+GET  /railgun/gas-preflight  can the submitter afford a private swap?
+POST /railgun/shield      shield an ERC-20 into the 0zk wallet
+POST /railgun/private-swap  one atomic unshield -> swap -> reshield
 ```
+
+## Why the browser talks to the enclave
+
+The oracle, identity service, and Railgun sidecar are on an internal-only Docker
+network with no published ports, because each holds a secret: the oracle signing
+key, the session key, and the wallet mnemonic respectively. The enclave is the
+only service on both networks, so it is the single controlled entry point.
+
+The `/railgun/*` endpoints proxy to the sidecar and return its answer verbatim —
+they do not reinterpret status. `/pipeline/*` orchestrates.
+
+Orchestrating here grants the enclave **no new authority**. It still cannot sign
+a UserOperation (identity holds the session key) or move shielded funds (the
+sidecar holds the mnemonic). It sequences calls to components that each keep
+their own secrets and their own refusals.
+
+## The pipeline
+
+`pipeline.py` runs the same sequence as `scripts/run_full_pipeline.sh`. The bash
+script remains the CLI path; this is the same steps, reachable over HTTP.
+
+Stages 1-3 call the same functions `/rebalance` calls — `fetch_all_assets`,
+`compute_all_signals`, `query_slm`, `attest_decision` — rather than HTTP-ing this
+same process. That is what makes per-stage progress real rather than cosmetic:
+each stage advances only when the underlying call returns, and the code path is
+identical to the one the CLI exercises. Nothing is duplicated.
+
+Before stage 1 the run makes one read-only check: can the public submitter
+actually pay for the RelayAdapt transaction? EIP-1559 makes the sender hold
+`gasLimit x maxFeePerGas` up front, and Railgun's cross-contract gas limit is
+~3.36M (it enforces a minimum so the reshield leg cannot be griefed) against
+~1.9M typically consumed. Everything between stage 1 and the swap is expensive
+and non-refundable — a UserOperation, one of the session key's rate-limited
+daily slots, and minutes of Groth16 proving — so discovering a shortfall at
+stage 7 wastes all of it. A failed preflight leaves **every** stage `pending`.
+
+| Stage | What actually happens |
+|---|---|
+| Market Analysis | CoinGecko OHLC → SMA crossover + rolling z-score |
+| AI Decision | local SLM over the signal output |
+| TDX Attestation | decision hash bound into a TDX quote; measurement checked against the on-chain constant |
+| Oracle Verification | quote verified off-chain, attestation signed |
+| ERC-4337 Execution | UserOperation calling `AegisVault.rebalance` |
+| Proof of Innocence | real precondition check: aggregator configured **and** balance POI-validated |
+| Private Swap | Groth16 proof + atomic RelayAdapt transaction |
+| Reshield | verified by polling for the shielded balance to actually increase |
+| Confirmed | final state |
+
+A stage moves to `succeeded` only on a real result. On failure the pipeline
+stops, the failing stage is named, and **downstream stages stay `pending`** — they
+are never reported as succeeded.
+
+Two of these are genuine gates, not labels:
+
+- **Proof of Innocence** fails the run if no aggregator is configured or the
+  balance is not yet POI-validated. It has caught both conditions live.
+- **The gas preflight** stops a run before anything is spent, and demands 25%
+  headroom over the current reservation. That margin was added after a run
+  cleared the check at t=0 and then failed at the swap ~50s later on a ~8%
+  base-fee rise, having already spent a UserOperation and a rate-limit slot.
+- **Reshield** polls for up to 90s for the shielded USDC balance to increase, and
+  fails if it does not. Reading once was a false-negative: the engine needs time
+  to scan the new commitment, and an immediate read reported a completed reshield
+  as a failure.
 
 ## What it does not do
 
