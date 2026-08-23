@@ -9,8 +9,7 @@ what it holds.
 
 Built for **Road to Devcon — NITK Surathkal**, on the theme *Make Private Apps using Ethereum*.
 
-<!-- TODO: hero screenshot of the dashboard mid-run -->
-<!-- ![Aegis dashboard](docs/images/dashboard.png) -->
+![Aegis](docs/images/hero.png)
 
 ---
 
@@ -66,22 +65,7 @@ on Sepolia with a pool against all four others.
 
 ## Architecture
 
-```
-  browser                enclave              oracle            chain             railgun
-  ───────                ───────              ──────            ─────             ───────
-  deposit  ──signs──►                                                          ►  shield
-                         signals
-                         SLM decision
-                         TDX quote     ──►    verify quote
-                                              sign attestation ──►  record
-                                                                    decision
-                                                                              ►  POI check
-                                                                              ►  atomic
-                                                                                 unshield→
-                                                                                 swap→
-                                                                                 reshield
-  withdraw ──────────────────────────────────────────────────────────────────► unshield
-```
+![Aegis architecture](docs/images/architecture.png)
 
 Every service holds exactly one secret and refuses to do anything outside its remit:
 
@@ -165,21 +149,39 @@ docker compose exec oracle  python -m pytest   # 27 — quote parsing, signing
 
 ## Stack
 
-**Trusted compute** — Intel TDX via [dstack](https://github.com/Dstack-TEE/dstack), Ollama
-running Qwen 2.5 3B with weights baked into the measured image, FastAPI.
+Here is how each piece of the stack earns its place:
 
-**Chain** — Solidity + Foundry, ERC-4337 with ZeroDev Kernel v3.1 and a Pimlico bundler,
-deployed on Ethereum Sepolia.
+**Trusted compute** — the decision has to be provable, so it runs in a measured enclave
+with the model weights inside the measurement.
 
-**Privacy** — Railgun SDK and Cookbook for the shielded pool, RelayAdapt for atomic
-cross-contract calls, Groth16 proving via snarkjs, Proof of Innocence against the required
-Chainalysis list.
+[![Intel TDX](https://img.shields.io/badge/ISOLATED_BY-INTEL_TDX-0068B5?style=for-the-badge&logo=intel&logoColor=white&labelColor=555555)](https://github.com/Dstack-TEE/dstack)
+[![Qwen](https://img.shields.io/badge/THINKS_WITH-QWEN_2.5_3B-1A1A1A?style=for-the-badge&logo=ollama&logoColor=white&labelColor=555555)](https://ollama.com)
+[![FastAPI](https://img.shields.io/badge/SERVED_WITH-FASTAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white&labelColor=555555)](https://fastapi.tiangolo.com)
+[![Python](https://img.shields.io/badge/WRITTEN_IN-PYTHON_3.11-3776AB?style=for-the-badge&logo=python&logoColor=white&labelColor=555555)](https://python.org)
 
-**Trading** — Uniswap V3 (`SwapRouter02`, `QuoterV2`) through a custom Cookbook step,
-CoinGecko for market data.
+**Chain** — the attestation is checked on-chain, and the agent's authority is a session
+key the contract itself constrains.
 
-**Frontend** — Next.js 16, React 19, wagmi 2, RainbowKit 2, viem. Holds no keys and no
-trading logic; it starts jobs and reads state.
+[![Solidity](https://img.shields.io/badge/CONTRACTS_IN-SOLIDITY-363636?style=for-the-badge&logo=solidity&logoColor=white&labelColor=555555)](https://soliditylang.org)
+[![Foundry](https://img.shields.io/badge/TESTED_WITH-FOUNDRY-2B2B2B?style=for-the-badge&labelColor=555555)](https://getfoundry.sh)
+[![ERC-4337](https://img.shields.io/badge/ACCOUNTS-ERC--4337-3C3C3D?style=for-the-badge&logo=ethereum&logoColor=white&labelColor=555555)](https://eips.ethereum.org/EIPS/eip-4337)
+[![Sepolia](https://img.shields.io/badge/DEPLOYED_ON-SEPOLIA-627EEA?style=for-the-badge&logo=ethereum&logoColor=white&labelColor=555555)](https://sepolia.etherscan.io)
+
+**Privacy** — balances are commitments, spends are proofs, and every spend passes a
+sanctions gate before it is allowed.
+
+[![Railgun](https://img.shields.io/badge/SHIELDED_BY-RAILGUN-7B61FF?style=for-the-badge&labelColor=555555)](https://railgun.org)
+[![Groth16](https://img.shields.io/badge/PROVEN_WITH-GROTH16-5A4FCF?style=for-the-badge&labelColor=555555)](https://github.com/iden3/snarkjs)
+[![POI](https://img.shields.io/badge/SCREENED_BY-PROOF_OF_INNOCENCE-E8A33D?style=for-the-badge&labelColor=555555)](https://docs.railgun.org/wiki/assurance/proof-of-innocence)
+[![Uniswap](https://img.shields.io/badge/SWAPS_ON-UNISWAP_V3-FF007A?style=for-the-badge&labelColor=555555)](https://docs.uniswap.org)
+
+**Frontend and infra** — holds no keys and no trading logic; it starts jobs and reads state.
+
+[![Next.js](https://img.shields.io/badge/BUILT_WITH-NEXT.JS_16-000000?style=for-the-badge&logo=nextdotjs&logoColor=white&labelColor=555555)](https://nextjs.org)
+[![React](https://img.shields.io/badge/RENDERED_BY-REACT_19-61DAFB?style=for-the-badge&logo=react&logoColor=black&labelColor=555555)](https://react.dev)
+[![TypeScript](https://img.shields.io/badge/TYPED_IN-TYPESCRIPT-3178C6?style=for-the-badge&logo=typescript&logoColor=white&labelColor=555555)](https://typescriptlang.org)
+[![wagmi](https://img.shields.io/badge/WALLETS_VIA-WAGMI_+_VIEM-1B1B1F?style=for-the-badge&labelColor=555555)](https://wagmi.sh)
+[![Docker](https://img.shields.io/badge/RUNS_ON-DOCKER-2496ED?style=for-the-badge&logo=docker&logoColor=white&labelColor=555555)](https://docker.com)
 
 ---
 
