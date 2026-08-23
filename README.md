@@ -1,232 +1,217 @@
 # Aegis
 
-An autonomous rebalancing agent that reasons inside a TEE, proves what it
-decided on-chain, and executes through Railgun's shielded pool.
+**An autonomous trading agent that can prove what it decided, without showing you the money.**
 
-The frontend lives in `frontend/` and reads live Sepolia state — see
-[frontend/README.md](frontend/README.md). It is fed by
-`scripts/sync_frontend_config.py`, which generates a typed module from
-`shared/config` and `shared/abi`.
+Aegis runs a portfolio strategy inside a hardware-isolated enclave, records every decision
+on-chain as a signed attestation *before any funds move*, and settles the resulting trade
+inside Railgun's shielded pool. You can verify the agent did what it said. You cannot see
+what it holds.
+
+Built for **Road to Devcon — NITK Surathkal**, on the theme *Make Private Apps using Ethereum*.
+
+<!-- TODO: hero screenshot of the dashboard mid-run -->
+<!-- ![Aegis dashboard](docs/images/dashboard.png) -->
 
 ---
 
-## The chain of custody
+## The problem
 
-Every link exists to close a specific gap. Read left to right:
+Two things you want from an automated trading agent pull against each other.
+
+You want to **verify it actually did what it claimed** — most trading bots are a black box
+with a Twitter account. Nothing stops the operator swapping the model out, trading against
+their own users, or rewriting the story after a bad week.
+
+You also want your **positions not readable by everyone**. Putting the bot on-chain fixes
+the first problem and makes the second one far worse: your entries, your sizing, and
+eventually your whole strategy become a public document that anyone can trade against.
+
+So you pick one: *trustworthy but exposed*, or *private but unverifiable*. Aegis is an
+attempt to refuse that trade.
+
+---
+
+## How it works
+
+A single run moves through nine stages. Each advances only when the underlying call returns
+a real result — there are no timers, and a failure stops the run and names the stage rather
+than skipping ahead.
+
+| # | Stage | What actually happens |
+|---|---|---|
+| 1 | Market analysis | CoinGecko OHLC → SMA crossovers and rolling z-scores. Deterministic; raises rather than degrading on missing data. |
+| 2 | AI decision | A local SLM turns those signals into an allocation. Schema-validated; no default is ever substituted. |
+| 3 | TDX attestation | The decision hash is bound into a hardware quote as `report_data`, then re-parsed to confirm the binding took. |
+| 4 | Oracle verification | An independent service replays the event log against the attested registers, derives the measurement, and signs. |
+| 5 | On-chain execution | An ERC-4337 UserOperation records the attested decision. Signature, measurement and expiry all checked on-chain. |
+| 6 | Proof of Innocence | A real gate: funds must be validated against the required sanctions list before they can be spent. |
+| 7 | Private swap | The trade the allocation implies — one atomic transaction unshields, swaps, and reshields. |
+| 8 | Reshield | Verified by watching the shielded balance actually increase, not inferred from the transaction succeeding. |
+| 9 | Confirmed | Vault log entry and settlement transaction cross-checked against each other. |
+
+<!-- TODO: screenshot of the nine stages completing -->
+<!-- ![Pipeline run](docs/images/pipeline.png) -->
+
+### The decision drives the trade
+
+The allocation isn't decorative. `plan_rebalance` values each shielded holding using the
+same prices the model was shown, compares them against the attested target, and executes
+the single trade that closes the largest gap. A caller may cap the trade size; it cannot
+choose the direction, because direction belongs to the decision that was signed.
+
+Trades route through WETH, because the swap recipe is single-hop and WETH is the only asset
+on Sepolia with a pool against all four others.
+
+---
+
+## Architecture
 
 ```
-  enclave                oracle                 chain                  railgun
-  ───────                ──────                 ─────                  ───────
-  fetch OHLC
-  compute signals
-  ask the SLM
-    │
-    ├─ decisionHash = keccak(canonical JSON)
-    ├─ TDX quote with decisionHash in report_data
-    │
-    └──────────────────▶ parse the quote
-                         report_data == decisionHash?
-                         event log replays to RTMR0-3?
-                         compose hash from the *attested* log
-                         measurement = keccak(mrtd‖rtmr0-2‖composeHash)
-                         measurement allowlisted?
-                           │
-                           └─ sign(chainId, verifier, decisionHash,
-                                   measurement, expiry)
-                                        │
-                                        └──────▶ recover == oracleSigner?
-                                                 measurement == expected?
-                                                 not expired?
-                                                 not already executed?
-                                                    │
-                                                    └─ RebalanceExecuted
-                                                       (hash, timestamp, seq)
-                                                                │
-                                                                └──▶ shield
-                                                                     unshield
-                                                                     swap
-                                                                     reshield
+  browser                enclave              oracle            chain             railgun
+  ───────                ───────              ──────            ─────             ───────
+  deposit  ──signs──►                                                          ►  shield
+                         signals
+                         SLM decision
+                         TDX quote     ──►    verify quote
+                                              sign attestation ──►  record
+                                                                    decision
+                                                                              ►  POI check
+                                                                              ►  atomic
+                                                                                 unshield→
+                                                                                 swap→
+                                                                                 reshield
+  withdraw ──────────────────────────────────────────────────────────────────► unshield
 ```
 
-The decision hash is bound into the quote's `report_data`, so the oracle cannot
-attest a decision the enclave did not make. The measurement is derived from the
-quote's own registers, so the enclave cannot misreport its own identity. The
-signature covers `chainId` and the verifier address, so a proof minted for one
-deployment cannot be replayed against another. The vault records every executed
-decision hash, so a proof cannot be replayed against the same deployment inside
-its validity window.
+Every service holds exactly one secret and refuses to do anything outside its remit:
 
-## What each service is
+| Service | Holds | Cannot |
+|---|---|---|
+| `enclave` | **nothing** | sign a UserOperation, or move shielded funds |
+| `identity` | session key | spend outside one selector on one contract |
+| `oracle` | attestation signing key | produce a quote, or move funds |
+| `railgun-sidecar` | wallet mnemonic | be reached from the host or the internet |
 
-| Service | Language | Holds | Reachable from |
-|---|---|---|---|
-| `dstack-simulator` | — | nothing | internal |
-| `enclave` | Python | nothing secret | host `:8000` + internal |
-| `oracle` | Python | attestation signing key | internal only |
-| `identity` | TypeScript | session key | internal only |
-| `railgun-sidecar` | TypeScript | wallet mnemonic | internal only |
+Only the enclave is published to the host. The other three sit on an `internal: true`
+Docker network with no port mapping, which `scripts/verify_deployment.sh` asserts from
+outside.
 
-The three services holding secrets publish no ports. The enclave is the only one
-on both networks, which makes it the sole path in — and
-`scripts/verify_deployment.sh` asserts that rather than trusting the config.
+---
 
-## Current deployment (Sepolia)
+## The trust model
 
-Deployed and exercised end to end on 2026-08-23. `shared/config/deployed.json`
-is the machine-readable source; this table is for orientation.
+The distinction between *proven* and *disclosed* matters more than any individual feature.
+
+| Claim | Status | What backs it |
+|---|---|---|
+| The decision came from this exact code | **Proven** | Measurement derived from the quote, checked on-chain against a value burned in at deploy. |
+| The agent cannot steal the funds | **Proven** | The session key calls one function, on one contract, with zero value — and that contract has no function that moves a token. |
+| Positions are private | **Proven** | Balances are commitments in Railgun's pool, spent by zero-knowledge proof. |
+| The trade follows the attested decision | **Proven** | Pair and size derived from the allocation and current holdings. |
+| Nothing was extracted by a searcher | **Measured** | Reported per swap from the mined block — realised price against quote, and whether anyone traded both sides. |
+| The code ran on real secure hardware | **Disclosed** | This deployment runs a TDX simulator. That fact is signed into the attestation and emitted on-chain with every decision. |
+
+`AttestationVerifier.requireHardware` will reject simulator-backed decisions outright. It is
+off here because this deployment honestly is a simulator — the flag works, and we tested
+that it reverts with `HardwareAttestationRequired()`.
+
+---
+
+## Deployment — Ethereum Sepolia
 
 | | |
 |---|---|
-| AegisVault | [`0xB7B42f53f69D6a973a34c77EB690a828eb91bCD0`](https://sepolia.etherscan.io/address/0xB7B42f53f69D6a973a34c77EB690a828eb91bCD0) |
-| AttestationVerifier | [`0x17227Df878fDB2D1AdC67891c339E741218161b7`](https://sepolia.etherscan.io/address/0x17227Df878fDB2D1AdC67891c339E741218161b7) |
-| Smart account (bound) | `0x61e7eDBD1C14C7F0B14513958e94d9f58770E662` |
+| `AegisVault` | [`0x518D2de68f1088a04a1F3a5Ea6360f357f80878d`](https://sepolia.etherscan.io/address/0x518D2de68f1088a04a1F3a5Ea6360f357f80878d) |
+| `AttestationVerifier` | [`0xCEe775680Ca45192F00181643DAba9A18150059B`](https://sepolia.etherscan.io/address/0xCEe775680Ca45192F00181643DAba9A18150059B) |
+| Smart account | `0x61e7eDBD1C14C7F0B14513958e94d9f58770E662` |
 | Oracle signer | `0x0212AdAc560383416B4973Ded96c35Dcb912531A` |
-| Enclave measurement | `0x94261f53…e17a1af4` |
-| Attestation source | `simulator` |
+| Enclave measurement | `0x94261f530c8d08cdda5620deecce45120d745a871c9ed96f08ab428de17a1af4` |
+| Whitelisted assets | WETH, USDC, DAI, LINK, UNI |
+| Session key policy | 10 runs/day · one selector `0xe7ef57de` · zero value |
 
-Verified live:
+---
 
-- [`RebalanceExecuted #1`](https://sepolia.etherscan.io/tx/0x31f617c0959671839c4925042d70c24fcd18b8444b3ea83e1332987f7652a3c8)
-  — enclave decision → oracle proof → ERC-4337 UserOperation → on-chain event.
-  The log carries one indexed hash and two words (timestamp, sequence); no
-  amount field exists.
-- [Railgun shield](https://sepolia.etherscan.io/tx/0x15a77bfa97e4f47b4232ef5f5ccad4a790ec0b34c41a5ed55e3856b413cfa361)
-  — 0.002 WETH into the shielded pool. The 0zk balance reads
-  `1995000000000000`, i.e. the amount less the 25 bps protocol fee.
+## Running it
 
-- [Private swap](https://sepolia.etherscan.io/tx/0x67d64afa95fd76e82d7f38d52e8fa234253c73d7c9ec2d78f3a3000e2aab41dd)
-  — one atomic RelayAdapt transaction: unshield 0.0015 WETH, swap on Uniswap V3,
-  reshield 33.66 USDC. Real Groth16 proof, real POI validation against the
-  Chainalysis list, 1.86M gas.
-- [Private swap driven from the UI](https://sepolia.etherscan.io/tx/0xca122606ba)
-  — the same path triggered by the frontend button, block 11545862.
-
-POI is genuinely enforced via `https://ppoi.fdi.network`; there is no simulated
-POI path in this repository. What is *not* yet enabled is private submission —
-see gap 2 below.
-
-## Getting it running
+**Prerequisites:** Docker, Node 20+, Python 3.11+, [Foundry](https://getfoundry.sh).
 
 ```bash
-cp .env.example .env      # fill in the keys
-scripts/fetch_simulator.sh
-docker compose build
+cp .env.example .env      # fill in RPC, bundler and wallet keys
+docker compose up -d      # enclave, oracle, identity, railgun-sidecar, simulator
 ```
 
-Then, in order — the order matters, see "Bootstrap" below:
+The enclave image bakes in the model weights, so the first build pulls several GB and takes
+a while. Once the stack is healthy:
 
 ```bash
-scripts/deploy_sepolia.sh    # reads the live measurement, deploys, syncs ABIs
-scripts/bootstrap.sh         # derives the account, approves, binds (one-shot)
-scripts/verify_deployment.sh # confirms all of the above
-scripts/run_full_pipeline.sh # end-to-end
+scripts/deploy_sepolia.sh   # deploys both contracts against the running enclave's measurement
+scripts/bootstrap.sh        # creates and binds the session key
+cd frontend && npm run dev  # http://localhost:3000
 ```
 
-## Bootstrap: the circular dependency
+`scripts/verify_deployment.sh` checks the live configuration matches what is committed, and
+`scripts/run_full_pipeline.sh` runs the same nine stages from the CLI.
 
-`AegisVault` needs the executing account's address to enforce policy. The
-session key's policy needs the vault's address to scope itself. Neither can be
-created knowing the other.
-
-The resolution is that an ERC-4337 Kernel account address is **counterfactual** —
-deterministic in `(owner, entryPoint, kernelVersion, index)` and computable
-before any transaction exists. So:
-
-1. Deploy the vault with `sessionKey` unset.
-2. Derive the smart account address. No transaction.
-3. Build a session-key approval scoped to the vault.
-4. `setSessionKey(smartAccount)` — callable exactly once.
-
-**Step 4 binds the smart account, not the session-key EOA.** A UserOperation
-executes with `msg.sender == account`; the EOA that signs it never appears as
-the caller. Binding the EOA yields a vault that reverts `NotSessionKey()` on
-every rebalance forever — and since the setter is one-shot, that is
-unrecoverable without a redeploy. `setVaultSessionKey.ts` reads the value back
-after writing, for this reason.
-
-## The security model, stated plainly
-
-**What is enforced on-chain.** The vault has no withdrawal function, no token
-transfer, no `receive`, no `fallback`, and no `delegatecall`. This is structural,
-not policy: session-key permissions are code that can have bugs, whereas a
-missing function cannot. Even a fully compromised owner key and a fully
-compromised session key cannot extract value, because no code path moves value.
-`AegisVault.t.sol` asserts this against the compiled artifact by probing 512
-undeclared selectors.
-
-**What the session key can do.** Call `rebalance` on one contract, with zero
-value, once per day. Its worst case is writing junk to an execution log.
-
-**What the oracle is trusted for.** This deployment uses relayed verification:
-the full DCAP quote is checked off-chain and the oracle signs a compact
-statement. A compromised oracle can sign for a measurement no real enclave
-produced. It *cannot* fabricate a decision, because the decision hash comes out
-of the quote's `report_data`. Removing this assumption means on-chain DCAP
-verification, which costs millions of gas and needs on-chain Intel collateral.
-
-**What the simulator does not prove.** A simulator quote is a canned attestation
-blob with `report_data` patched in. Every structural check still runs and still
-catches a mismatched decision, a forged event log, or an unexpected measurement.
-What it cannot establish is that any of it ran on real hardware. The attestation
-source is carried through `/health`, `deployed.json`, the oracle's response, and
-the pipeline summary, so it is never left to inference. Set
-`AEGIS_REQUIRE_HARDWARE=true` to make the oracle refuse simulator quotes.
-
-**Key separation.** Four roles, four keys: deployer, owner, session key, oracle.
-Reusing one collapses four blast radii into one. The owner key is deliberately
-*not* passed to any container — it is needed only by the host-side bootstrap.
-
-## Known gaps
-
-These are real and deliberately not papered over:
-
-1. **No on-chain DCAP verification.** Relayed verification instead; the trade-off
-   is documented above and in `AttestationVerifier.sol`.
-2. **Public-mempool MEV exposure.** The atomic RelayAdapt transaction is
-   submitted publicly by default, so it can be sandwiched — bounded by the
-   slippage floor, not prevented. Flashbots Protect works on Sepolia and is one
-   env var away (`AEGIS_SUBMISSION_MODE=private`); it is not the default because
-   Sepolia builder coverage is thin and a route that silently fails to land is a
-   worse default than one that is honest about its exposure.
-   See `railgun-sidecar/MEV.md`.
-3. **The session key does not yet authorise Railgun.** `getSubmitter()` is the
-   seam; leaving it unswitched is a deliberate scope decision, explained there.
-4. **The session key is a plaintext env var.** It should be TEE-derived via
-   `DstackClient.get_key`; the upgrade path is documented in
-   `identity/src/clients.ts`.
-5. **`expectedMeasurement` is owner-mutable.** Immutability would make every
-   enclave rebuild a full protocol redeploy. Every rotation emits an event.
-
-## Layout
-
-```
-shared/
-  config/      assets, network, policy, deployed  — one source of truth
-  abi/         generated from the Foundry build by scripts/sync_abi.py
-  pylib/       aegis_tdx: quote parsing, event-log replay, measurement
-               derivation. Shared verbatim by enclave and oracle so the two
-               cannot drift.
-contracts/     AegisVault, AttestationVerifier, Foundry tests
-frontend/      Next.js app; reads chain state directly, no backend
-enclave/       FastAPI: data -> signals -> SLM -> TDX quote
-oracle/        quote verification + attestation signing
-identity/      ERC-4337 account, session key, submission
-railgun-sidecar/ shield, unshield-swap-reshield
-simulator/     dstack guest-agent simulator container
-scripts/       deploy, bootstrap, verify, run
-tests/         cross-language integration tests on Anvil
-```
-
-## Tests
+### Tests
 
 ```bash
-(cd contracts && forge test)      # 36 tests
-(cd enclave  && python -m pytest) # 64 tests
-(cd oracle   && python -m pytest) # 25 tests
-(cd tests    && npm test)         # 9 cross-language tests on Anvil
+cd contracts && forge test              # 42 — contracts
+cd identity   && npm test               # 19 — session-key policy
+docker compose exec enclave python -m pytest   # 80 — attestation, signals, planner
+docker compose exec oracle  python -m pytest   # 27 — quote parsing, signing
 ```
 
-The integration suite deploys real contracts to Anvil, computes decision hashes
-with the enclave's Python, signs proofs with the oracle's Python, and verifies
-them in Solidity — so a divergence in keccak domains, ABI packing, or the
-EIP-191 envelope fails at the seam instead of on-chain.
+---
+
+## Stack
+
+**Trusted compute** — Intel TDX via [dstack](https://github.com/Dstack-TEE/dstack), Ollama
+running Qwen 2.5 3B with weights baked into the measured image, FastAPI.
+
+**Chain** — Solidity + Foundry, ERC-4337 with ZeroDev Kernel v3.1 and a Pimlico bundler,
+deployed on Ethereum Sepolia.
+
+**Privacy** — Railgun SDK and Cookbook for the shielded pool, RelayAdapt for atomic
+cross-contract calls, Groth16 proving via snarkjs, Proof of Innocence against the required
+Chainalysis list.
+
+**Trading** — Uniswap V3 (`SwapRouter02`, `QuoterV2`) through a custom Cookbook step,
+CoinGecko for market data.
+
+**Frontend** — Next.js 16, React 19, wagmi 2, RainbowKit 2, viem. Holds no keys and no
+trading logic; it starts jobs and reads state.
+
+---
+
+## Repository
+
+```
+contracts/         AegisVault + AttestationVerifier, Foundry tests
+enclave/           signals, SLM, TDX attestation, pipeline orchestration
+oracle/            off-chain quote verification and attestation signing
+identity/          ERC-4337 smart account and session-key management
+railgun-sidecar/   shielded pool: shield, unshield, atomic swap, POI
+frontend/          Next.js dashboard
+shared/            config and ABIs — the single source of truth
+scripts/           deploy, bootstrap, verify, full-pipeline
+```
+
+Each directory has its own README explaining what it does and why it is shaped that way.
+`shared/config` is generated into the frontend by `scripts/sync_frontend_config.py`, so the
+UI can never drift from what is deployed.
+
+---
+
+## Known limitations
+
+Listed because a demo that hides them is a demo that gets found out.
+
+- **The enclave is simulated.** Every verification path runs; none of it proves silicon.
+- **Settlement is submitted from a public address.** Amounts stay hidden, but one address
+  broadcasts every settlement, which links them to each other. Railgun's broadcaster network
+  is the designed fix and is not yet wired in.
+- **The enclave API is unauthenticated.** Fine bound to localhost for a demo; it must not be
+  exposed on a shared network.
+- **One corrective trade per run.** A badly drifted portfolio converges over several runs.
+- **The model is small.** Qwen 2.5 3B responds to its signals but is not a serious
+  quantitative strategy. The contribution is the pipeline around it.

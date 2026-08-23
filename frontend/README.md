@@ -66,23 +66,38 @@ from real data:
 - `TrustCenter` displayed "Verified (SGX Enclave)", "Hardware Mode", MRENCLAVE
   `0x8f3a9b4d…`, a whitelist including WBTC, and a downloadable JSON labelled as
   an Intel SGX quote. This deployment runs Intel **TDX** through the dstack
-  *simulator*, holds only WETH and USDC, and has no MRENCLAVE.
+  *simulator*, and has no MRENCLAVE.
 - `ActivityLog` rendered three invented entries with fabricated transaction
   hashes, linked to `etherscan.io` (mainnet), where they do not exist.
 - `StatsFooter` showed "99.99% Platform Uptime" and "2.4M Context Windows" —
   neither measured anywhere.
 - `DepositorView` set a fake hash after a 2-second timeout, indistinguishable
-  on screen from a real deposit.
+  on screen from a real deposit. It and `AdminConsole` were later removed
+  outright — the admin controls toggled local React state with no contract
+  behind them, and the deposit card duplicated a flow that now works for real.
 - `DocsSection` described Intel SGX and MRENCLAVE.
 - `Web3Provider` offered mainnet, Polygon, Optimism, Arbitrum and Base but
   **not Sepolia**, the only chain the contracts are on.
 
-## Deposits
+## Deposits and withdrawals
 
-`DepositorView` explains how to shield rather than doing it. The shield path is
-real and works (`railgun-sidecar/src/shield.ts`), but the sidecar holds the
-wallet mnemonic and runs on an internal-only Docker network with no published
-port. Exposing it to a browser to make a button work would undo that isolation.
+Both are signed by the connected wallet, and neither requires the browser to
+hold anything it shouldn't.
+
+The sidecar holds the wallet mnemonic and the proving engine, so it is the only
+side that *can* build a shield transaction — and it must never see a user's key.
+So the two are split: the sidecar returns unsigned calldata for the approve and
+the shield, and the browser signs and broadcasts both with the user's own wallet.
+The deposit lands on-chain as the depositor's transaction rather than the
+operator's, which is also what makes it theirs in any dispute.
+
+Withdrawal is the reverse. Spending a shielded note needs a Groth16 proof over
+the commitment tree, which only the sidecar can produce, so the browser asks for
+one and names the address to pay. The recipient is always the caller's — there is
+no default in the code — and `useWithdraw` passes the connected account.
+
+Any whitelisted asset can be deposited, not just WETH. Restricting it to one made
+the other four unreachable: nothing could ever hold them to be rebalanced.
 
 ## Dependency note
 

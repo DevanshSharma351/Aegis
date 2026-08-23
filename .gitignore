@@ -1,6 +1,6 @@
-# Secrets
+# Secrets. `.env.example` is deliberately NOT ignored: it carries key names and
+# comments but no values, and without it nobody can tell what needs configuring.
 .env
-.env.example
 
 # Dependencies / build output
 node_modules/
@@ -35,3 +35,8 @@ prompt_utf8.txt
 # SESSION_KEY_PRIVATE_KEY), but it is per-deployment and regenerable, so it is
 # left untracked to avoid committing one deployment's blob into another's tree.
 shared/config/session-key-approval.json
+
+# Editor / agent tooling — local to a machine, not part of the project
+.claude/
+.vscode/
+.idea/
