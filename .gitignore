@@ -12,7 +12,9 @@ __pycache__/
 # Foundry
 contracts/out/
 contracts/cache/
-contracts/broadcast/
+# NOTE: broadcast logs are governed by contracts/.gitignore, not here. Foundry
+# ships a `!/broadcast` negation that overrides any rule set at this level, so a
+# rule here would look effective and silently do nothing.
 
 # Railgun engine state and Groth16 artifacts (regenerable, large)
 .railgun/
