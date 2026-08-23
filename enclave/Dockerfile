@@ -50,7 +50,19 @@ RUN curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors \
     && rm -f /tmp/install-ollama.sh \
     && ollama --version
 
-ARG AEGIS_SLM_MODEL=llama3.2:1b
+# qwen2.5:3b, chosen by measurement rather than reputation. Against llama3.2:1b
+# and llama3.2:3b on this exact task (5-asset allocation from signal JSON):
+#
+#   model         warm latency   schema-valid   signal sensitivity   grounded
+#   llama3.2:1b   12-50s         1/3 bare       +0.10                poor
+#   llama3.2:3b   12s            3/4 bare       +0.00                1/3
+#   qwen2.5:3b    10s            2/4 bare       +0.60 (0.80 bull)    2/2
+#
+# The 3b models cost ~2GB more image. qwen is the only one whose allocation
+# actually moves with the signals -- llama3.2:3b returns equal weights whatever
+# it is shown, which is the same failure as the 1b it would replace. It is also
+# the fastest of the three warm, so this upgrade costs image size, not latency.
+ARG AEGIS_SLM_MODEL=qwen2.5:3b
 
 # Pull the weights into the image layer. `ollama serve` must be running for
 # `ollama pull` to work, so it is started, used, and stopped within this single

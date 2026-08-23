@@ -1,7 +1,7 @@
 """
 Aegis Enclave — SLM allocation layer.
 
-Calls a local Ollama instance (llama3.2:1b, baked into the image at build time
+Calls a local Ollama instance (qwen2.5:3b, baked into the image at build time
 so the weights are covered by the TEE measurement) to turn deterministic signal
 output into a portfolio allocation.
 
@@ -18,7 +18,7 @@ from typing import Any, Mapping
 
 import ollama
 
-_MODEL = os.environ.get("AEGIS_SLM_MODEL", "llama3.2:1b")
+_MODEL = os.environ.get("AEGIS_SLM_MODEL", "qwen2.5:3b")
 _MAX_RETRIES = int(os.environ.get("AEGIS_SLM_MAX_RETRIES", "3"))
 _OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 _TEMPERATURE = float(os.environ.get("AEGIS_SLM_TEMPERATURE", "0.2"))
@@ -153,28 +153,37 @@ def _build_user_message(
     """
     The signal payload, plus the budget constraint stated so the model can act on it.
 
-    A 1B model cannot reliably divide 1 by the number of assets. Given five
-    assets and only "sums to 1.0" in the system prompt, it returned 0.25 each
-    (summing to 1.25), or 0.0 each, and repeated the identical mistake on every
-    corrective retry -- the arithmetic was the obstacle, not the wording of the
-    rejection. Naming the assets and spelling out the equal-weight value fixed
-    it in 3 of 3 trials.
+    The asset names and the sum rule are here rather than only in the system
+    prompt because the system prompt alone was not enough: shown five assets,
+    the model would name four, or return values that did not form a
+    distribution.
 
-    This constrains the arithmetic, not the decision. The model still chooses
-    the weights; it is only told what a valid set of weights must add up to, and
-    every allocation stays subject to the same validation either way.
+    WHAT IS DELIBERATELY ABSENT: an example of what equal weights would be.
+    An earlier version ended with "if you weight them equally, each must be 0.2,
+    because 5 x 0.2 = 1.0". It fixed the arithmetic and destroyed the decision.
+    Measured over three trials per case, WETH allocation against strongly
+    bullish and strongly bearish signals:
+
+        with the equal-weight example    bull 0.20   bear 0.20   (no response)
+        constraint stated alone          bull 0.51   bear 0.20   (responds)
+
+    Every run was schema-valid either way, so validation could not have caught
+    it -- the model was quietly copying the worked example instead of reading
+    the signals, and the rationale then asserted that all assets were neutral
+    when one had a z-score of 2.4. An arithmetic aid that doubles as an answer
+    is not an aid.
+
+    So this states the constraint and stops. The model chooses the weights.
     """
     count = len(expected_symbols)
-    equal_weight = round(1.0 / count, 4) if count else 0.0
     names = ", ".join(expected_symbols)
 
     lines = [
         json.dumps(signals, indent=2, default=str),
         "",
         f"Allocate across exactly these {count} assets: {names}.",
-        f"The {count} allocation values MUST add up to exactly 1.0.",
-        f"If you weight them equally, each must be {equal_weight}, "
-        f"because {count} x {equal_weight} = 1.0.",
+        f"Every value must be between 0 and 1, and the {count} values MUST sum "
+        f"to exactly 1.0.",
     ]
     return "\n".join(lines)
 
