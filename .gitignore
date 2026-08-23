@@ -27,9 +27,13 @@ dstack-sim/
 
 # Local scratch
 Microsoft/
-tests/
 prompt.txt
 prompt_utf8.txt
+
+# `tests/` was listed as scratch, which was wrong: it holds the cross-language
+# integration suite that checks the enclave, the oracle and the contracts agree
+# on the same encodings. Only its dependencies are ignored.
+tests/node_modules/
 
 # Session-key approval: NOT a secret (it is an enable signature, useless without
 # SESSION_KEY_PRIVATE_KEY), but it is per-deployment and regenerable, so it is
